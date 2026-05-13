@@ -236,8 +236,15 @@ static int backplane_write_bytes(uint32_t addr, const uint8_t *buf, uint32_t len
 #define BCMA_CORE_INTERNAL_MEM  0x80E    /* SOCRAM */
 #define BCMA_CORE_80211         0x812    /* D11 MAC */
 #define BCMA_CORE_PMU           0x827
+#define BCMA_CORE_SDIO_DEV      0x829    /* SDIO device core */
 #define BCMA_CORE_ARM_CM3       0x82A
 #define BCMA_CORE_GCI           0x840
+
+/* SDIO core register offsets within its data base. */
+#define SDPCMD_INTSTATUS        0x20     /* W1C; write 0xFFFFFFFF to ack-all */
+
+/* CHIPCLKCSR bit not already defined above. */
+#define SBSDIO_HT_AVAIL_REQ     0x10     /* request HT clock from chip */
 
 /* BCMA wrapper-register offsets (within a core's wrapbase) */
 #define BCMA_IOCTL              0x0408
@@ -593,6 +600,92 @@ static int set_passive(void)
 		return -EIO;
 	}
 	LOG_INF("set_passive: SOCRAM is up");
+	return 0;
+}
+
+/* === set_active: release ARM CM3 + confirm firmware boot ===================
+ *
+ * Mirrors Linux's brcmf_chip_cm3_set_active + brcmf_sdio_clkctl(CLK_AVAIL):
+ *   1. Activate the chip-side SDIO core: clear any pending interrupts so
+ *      the firmware sees a fresh start.
+ *   2. Release ARM CM3 from reset. The CM3 starts executing from its
+ *      reset vector at SOCRAM[0], i.e. the byte we wrote first during the
+ *      firmware upload.
+ *   3. Request HT clock by writing SBSDIO_HT_AVAIL_REQ to CHIPCLKCSR, then
+ *      poll for SBSDIO_HT_AVAIL. The chip's PMU only brings HT up after the
+ *      firmware boots far enough to enable its DPLL -- so HT_AVAIL = "fw
+ *      is alive and running."
+ *   4. Sanity-read chipcommon[0] to confirm the SDIO bridge still works.
+ *      (chipcommon is always-on; this is a "chip didn't die" check, not a
+ *      "firmware is up" check.)
+ */
+static int set_active(void)
+{
+	const struct bcm_core *sdio_dev = core_find(BCMA_CORE_SDIO_DEV);
+	const struct bcm_core *arm = core_find(BCMA_CORE_ARM_CM3);
+
+	if (sdio_dev == NULL || arm == NULL) {
+		LOG_ERR("set_active: missing core(s) sdio=%p arm=%p",
+			(const void *)sdio_dev, (const void *)arm);
+		return -ENODEV;
+	}
+
+	LOG_INF("set_active: clear SDIO core intstatus (base=0x%08x)",
+		sdio_dev->base);
+	int ret = backplane_write32(sdio_dev->base + SDPCMD_INTSTATUS,
+				    0xFFFFFFFFu);
+	if (ret != 0) {
+		LOG_ERR("set_active: intstatus clear failed: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("set_active: release ARM CM3 (wrap=0x%08x)", arm->wrapbase);
+	ret = ai_resetcore(arm->wrapbase, 0, 0, 0);
+	if (ret != 0) {
+		LOG_ERR("set_active: ARM resetcore failed: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("set_active: request HT clock");
+	ret = sdio_write_byte(&backplane, SBSDIO_FUNC1_CHIPCLKCSR,
+			      SBSDIO_HT_AVAIL_REQ);
+	if (ret != 0) {
+		LOG_ERR("set_active: CHIPCLKCSR write failed: %d", ret);
+		return ret;
+	}
+
+	uint8_t clkcsr = 0;
+	int64_t t0 = k_uptime_get();
+	for (int i = 0; i < 500; i++) {
+		ret = sdio_read_byte(&backplane, SBSDIO_FUNC1_CHIPCLKCSR,
+				     &clkcsr);
+		if (ret != 0) {
+			LOG_ERR("set_active: CHIPCLKCSR read failed: %d", ret);
+			return ret;
+		}
+		if (clkcsr & SBSDIO_HT_AVAIL) {
+			break;
+		}
+		k_msleep(1);
+	}
+	int64_t t_wait = k_uptime_get() - t0;
+
+	if (!(clkcsr & SBSDIO_HT_AVAIL)) {
+		LOG_ERR("set_active: HT_AVAIL timeout (CHIPCLKCSR=0x%02x after %lld ms)",
+			clkcsr, (long long)t_wait);
+		return -ETIMEDOUT;
+	}
+	LOG_INF("set_active: HT_AVAIL after %lld ms (CHIPCLKCSR=0x%02x)",
+		(long long)t_wait, clkcsr);
+
+	uint32_t chipid;
+	ret = backplane_read32(BRCMF_SI_ENUM_BASE, &chipid);
+	if (ret != 0) {
+		LOG_ERR("set_active: post-boot chipid read failed: %d", ret);
+		return ret;
+	}
+	LOG_INF("set_active: post-boot chipid = 0x%08x (chip alive, fw running)",
+		chipid);
 	return 0;
 }
 
@@ -1203,6 +1296,14 @@ static int bcm43430_bringup(void)
 			(long long)(t2 - t1));
 #endif
 	}
+
+	LOG_INF("--- ARM release + boot ---");
+	ret = set_active();
+	if (ret != 0) {
+		LOG_ERR("set_active failed: %d", ret);
+		return ret;
+	}
+	LOG_INF("--- ARM release + boot complete ---");
 
 	LOG_INF("--- subsystem bring-up complete ---");
 	return 0;
