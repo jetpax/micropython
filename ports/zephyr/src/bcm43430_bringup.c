@@ -198,42 +198,6 @@ static int bcm43430_bringup(void)
 	}
 	LOG_INF("sdio_set_block_size(backplane=1, 64) ok");
 
-	/* Reset the SDHCI DAT state machine before the first 4-bit data
-	 * transfer on this silicon. Empirically required: post-boot from
-	 * the REPL, the exact same CMD53 ARG/BLKSIZECNT/CMDTM that fires
-	 * DATA_CRC here succeeds *after* an explicit RESET_DATA + INT_STATUS
-	 * clear -- with SDHCI register state byte-identical to ours at
-	 * this point. Whatever the controller's cold-start state is in,
-	 * RESET_DATA jogs it into the state where the first CMD53 works.
-	 * Inlined since sdhc_bcm2835_soft_reset() is static to the driver.
-	 */
-	sys_write32(sys_read32(0x3F30002C) | 0x04000000, 0x3F30002C);
-	for (int i = 0; i < 1000; i++) {
-		if (!(sys_read32(0x3F30002C) & 0x04000000)) {
-			break;
-		}
-		k_busy_wait(10);
-	}
-	sys_write32(0xFFFFFFFF, 0x3F300030);
-
-	/* Re-write CTL0 (host control) to re-arm the controller's internal
-	 * bus-width state machine. REPL isolation T2 vs T3: a chip-side
-	 * CMD52 to CCCR_BUS_IF doesn't fix the first-CMD53 wall, but a
-	 * host-side write to CTL0 (even of the same value already there)
-	 * does. Hypothesis: after sd_init's bus-width ramp + RESET_DATA,
-	 * the controller's internal DAT-side state is desynced from the
-	 * register; the write re-arms it. Empirically verified at REPL;
-	 * this build is the firmware-side test of the same hypothesis.
-	 */
-	sys_write32(sys_read32(0x3F300028) | 0x02, 0x3F300028);
-
-	/* DIAG: SDHCI state post-RESET_DATA + CTL0 re-write, just before
-	 * the chipid CMD53.
-	 */
-	LOG_INF("pre-CMD53 SDHCI (post-reset+ctl0): ctl0=0x%08x ctl1=0x%08x is=0x%08x pstate=0x%08x",
-		sys_read32(0x3F300028), sys_read32(0x3F30002C),
-		sys_read32(0x3F300030), sys_read32(0x3F300024));
-
 	uint32_t chipid_reg;
 	ret = backplane_read32(BRCMF_SI_ENUM_BASE, &chipid_reg);
 	if (ret != 0) {
@@ -298,10 +262,6 @@ static int bcm43430_bringup(void)
 		LOG_ERR("SDIOPULLUP=0 write failed: %d", ret);
 		return ret;
 	}
-	uint8_t pullup_val = 0xFF;
-	int rb = sdio_read_byte(&backplane, SBSDIO_FUNC1_SDIOPULLUP, &pullup_val);
-	LOG_INF("SDIOPULLUP readback: 0x%02x (rc=%d) -- write %s",
-		pullup_val, rb, pullup_val == 0 ? "took" : "NOT applied");
 
 	LOG_INF("--- subsystem bring-up complete ---");
 	return 0;
