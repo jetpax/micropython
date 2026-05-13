@@ -217,8 +217,8 @@ static int bcm43430_bringup(void)
 	}
 
 	/* PMU setup for downstream backplane access (firmware load, core
-	 * enables). Mirrors brcmfmac sdio.c::brcmf_sdio_buscoreprep, but
-	 * deliberately runs AFTER the chipid read per circle's order.
+	 * enables). Runs after the chipid read -- chipcommon is always-on,
+	 * doesn't need ALP forced.
 	 */
 	ret = sdio_write_byte(&backplane, SBSDIO_FUNC1_CHIPCLKCSR,
 			      BRCMF_INIT_CLKCTL1);
