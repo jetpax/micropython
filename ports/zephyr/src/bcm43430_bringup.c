@@ -117,6 +117,483 @@ static int backplane_read32(uint32_t addr, uint32_t *out)
 	return 0;
 }
 
+/* 32-bit write at a backplane address (mirrors brcmf_sdiod_writel). */
+static int backplane_write32(uint32_t addr, uint32_t val)
+{
+	uint8_t buf[4];
+	int ret;
+
+	ret = set_backplane_window(addr);
+	if (ret != 0) {
+		return ret;
+	}
+
+	uint32_t off = (addr & SBSDIO_SB_OFT_ADDR_MASK) | SBSDIO_SB_ACCESS_2_4B_FLAG;
+
+	buf[0] = (uint8_t)(val & 0xFF);
+	buf[1] = (uint8_t)((val >> 8) & 0xFF);
+	buf[2] = (uint8_t)((val >> 16) & 0xFF);
+	buf[3] = (uint8_t)((val >> 24) & 0xFF);
+
+	ret = sdio_write_addr(&backplane, off, buf, sizeof(buf));
+	if (ret != 0) {
+		LOG_ERR("sdio_write_addr(func1, 0x%05x, 4) failed: %d",
+			off, ret);
+		return ret;
+	}
+	return 0;
+}
+
+/* Variable-length read/write at a backplane address. Transfer must fit
+ * inside the current 32 KiB SBADDR window -- caller chooses the
+ * address; this helper does not slide the window mid-burst.
+ */
+static int backplane_read_bytes(uint32_t addr, uint8_t *buf, uint32_t len)
+{
+	int ret = set_backplane_window(addr);
+	if (ret != 0) {
+		return ret;
+	}
+
+	uint32_t off = (addr & SBSDIO_SB_OFT_ADDR_MASK) | SBSDIO_SB_ACCESS_2_4B_FLAG;
+
+	ret = sdio_read_addr(&backplane, off, buf, len);
+	if (ret != 0) {
+		LOG_ERR("sdio_read_addr(func1, 0x%05x, %u) failed: %d",
+			off, len, ret);
+	}
+	return ret;
+}
+
+static int backplane_write_bytes(uint32_t addr, const uint8_t *buf, uint32_t len)
+{
+	int ret = set_backplane_window(addr);
+	if (ret != 0) {
+		return ret;
+	}
+
+	uint32_t off = (addr & SBSDIO_SB_OFT_ADDR_MASK) | SBSDIO_SB_ACCESS_2_4B_FLAG;
+
+	/* Zephyr's sdio_write_addr takes a non-const buffer but does not
+	 * modify it; cast is safe.
+	 */
+	ret = sdio_write_addr(&backplane, off, (uint8_t *)buf, len);
+	if (ret != 0) {
+		LOG_ERR("sdio_write_addr(func1, 0x%05x, %u) failed: %d",
+			off, len, ret);
+	}
+	return ret;
+}
+
+/* === BCMA core enumeration (EROM scan) =====================================
+ *
+ * The BCM43430A1's AXI backplane has a hardware-described enumeration table
+ * (DMP/EROM). chipcommon's `eromptr` register (offset 0xFC) points at the
+ * table; we walk descriptors and harvest each core's slave-port base and
+ * slave-wrap base. The wrap base is where each core's IOCTL/RESET_CTL
+ * registers live -- a separate address space from the core's "data" base.
+ *
+ * Definitions mirror Linux's drivers/net/wireless/broadcom/brcm80211/
+ * brcmfmac/chip.c (DMP/PL-368 descriptor spec).
+ */
+
+/* descriptor types */
+#define DMP_DESC_TYPE_MSK       0x0000000F
+#define DMP_DESC_EMPTY          0x00000000
+#define DMP_DESC_VALID          0x00000001
+#define DMP_DESC_COMPONENT      0x00000001
+#define DMP_DESC_MASTER_PORT    0x00000003
+#define DMP_DESC_ADDRESS        0x00000005
+#define DMP_DESC_ADDRSIZE_GT32  0x00000008
+#define DMP_DESC_EOT            0x0000000F
+
+/* CompIdentA (first COMPONENT desc) */
+#define DMP_COMP_PARTNUM        0x000FFF00
+#define DMP_COMP_PARTNUM_S      8
+
+/* CompIdentB (second COMPONENT desc) */
+#define DMP_COMP_NUM_SWRAP      0x00F80000
+#define DMP_COMP_NUM_SWRAP_S    19
+#define DMP_COMP_NUM_MWRAP      0x0007C000
+#define DMP_COMP_NUM_MWRAP_S    14
+
+/* slave/wrap address descriptor */
+#define DMP_SLAVE_ADDR_BASE     0xFFFFF000
+#define DMP_SLAVE_TYPE          0x000000C0
+#define DMP_SLAVE_TYPE_S        6
+#define DMP_SLAVE_TYPE_SLAVE    0
+#define DMP_SLAVE_TYPE_SWRAP    2
+#define DMP_SLAVE_TYPE_MWRAP    3
+#define DMP_SLAVE_SIZE_TYPE     0x00000030
+#define DMP_SLAVE_SIZE_TYPE_S   4
+#define DMP_SLAVE_SIZE_4K       0
+#define DMP_SLAVE_SIZE_8K       1
+#define DMP_SLAVE_SIZE_DESC     3
+
+/* BCMA core IDs (subset). Full list in Linux's include/linux/bcma/bcma.h. */
+#define BCMA_CORE_INTERNAL_MEM  0x80E    /* SOCRAM */
+#define BCMA_CORE_80211         0x812    /* D11 MAC */
+#define BCMA_CORE_PMU           0x827
+#define BCMA_CORE_ARM_CM3       0x82A
+#define BCMA_CORE_GCI           0x840
+
+/* BCMA wrapper-register offsets (within a core's wrapbase) */
+#define BCMA_IOCTL              0x0408
+#define BCMA_IOCTL_CLK          0x0001
+#define BCMA_IOCTL_FGC          0x0002
+#define BCMA_RESET_CTL          0x0800
+#define BCMA_RESET_CTL_RESET    0x0001
+
+/* D11-specific IOCTL bits */
+#define D11_BCMA_IOCTL_PHYCLOCKEN  0x0004
+#define D11_BCMA_IOCTL_PHYRESET    0x0008
+
+/* chipcommon offsets */
+#define CC_EROMPTR_OFFSET       0xFC
+
+/* SOCRAM register offsets within SOCRAM core base */
+#define SOCRAM_BANKIDX_OFFSET   0x10
+#define SOCRAM_BANKPDA_OFFSET   0x44
+
+#define MAX_CORES 12
+
+struct bcm_core {
+	uint16_t id;
+	uint32_t base;
+	uint32_t wrapbase;
+};
+
+static struct bcm_core cores[MAX_CORES];
+static unsigned int num_cores;
+
+static int dmp_get_desc(uint32_t *erom_addr, uint32_t *val_out, uint8_t *type_out)
+{
+	int ret = backplane_read32(*erom_addr, val_out);
+	if (ret != 0) {
+		return ret;
+	}
+	*erom_addr += 4;
+
+	if (type_out != NULL) {
+		uint8_t t = (uint8_t)(*val_out & DMP_DESC_TYPE_MSK);
+		/* an ADDRESS desc with ADDRSIZE_GT32 still classifies as ADDRESS */
+		if ((t & ~DMP_DESC_ADDRSIZE_GT32) == DMP_DESC_ADDRESS) {
+			t = DMP_DESC_ADDRESS;
+		}
+		*type_out = t;
+	}
+	return 0;
+}
+
+static int dmp_get_regaddr(uint32_t *erom_addr, uint32_t *regbase, uint32_t *wrapbase)
+{
+	uint8_t desc;
+	uint32_t val;
+	int ret;
+	uint8_t wraptype;
+
+	*regbase = 0;
+	*wrapbase = 0;
+
+	ret = dmp_get_desc(erom_addr, &val, &desc);
+	if (ret != 0) {
+		return ret;
+	}
+
+	if (desc == DMP_DESC_MASTER_PORT) {
+		wraptype = DMP_SLAVE_TYPE_MWRAP;
+	} else if (desc == DMP_DESC_ADDRESS) {
+		/* no master port: this is the first slave-address desc.
+		 * Revert so the loop below re-consumes it, and look for SWRAP.
+		 */
+		*erom_addr -= 4;
+		wraptype = DMP_SLAVE_TYPE_SWRAP;
+	} else {
+		*erom_addr -= 4;
+		return -EILSEQ;
+	}
+
+	do {
+		/* find next ADDRESS desc or hit a component boundary */
+		do {
+			ret = dmp_get_desc(erom_addr, &val, &desc);
+			if (ret != 0) {
+				return ret;
+			}
+			if (desc == DMP_DESC_EOT) {
+				*erom_addr -= 4;
+				return -EFAULT;
+			}
+		} while (desc != DMP_DESC_ADDRESS && desc != DMP_DESC_COMPONENT);
+
+		if (desc == DMP_DESC_COMPONENT) {
+			*erom_addr -= 4;
+			return 0;
+		}
+
+		/* skip upper 32 bits of 64-bit address */
+		if (val & DMP_DESC_ADDRSIZE_GT32) {
+			uint32_t tmp;
+			ret = dmp_get_desc(erom_addr, &tmp, NULL);
+			if (ret != 0) {
+				return ret;
+			}
+		}
+
+		uint8_t sztype = (val & DMP_SLAVE_SIZE_TYPE) >> DMP_SLAVE_SIZE_TYPE_S;
+		if (sztype == DMP_SLAVE_SIZE_DESC) {
+			uint32_t szdesc;
+			ret = dmp_get_desc(erom_addr, &szdesc, NULL);
+			if (ret != 0) {
+				return ret;
+			}
+			if (szdesc & DMP_DESC_ADDRSIZE_GT32) {
+				uint32_t tmp;
+				ret = dmp_get_desc(erom_addr, &tmp, NULL);
+				if (ret != 0) {
+					return ret;
+				}
+			}
+		}
+
+		if (sztype != DMP_SLAVE_SIZE_4K && sztype != DMP_SLAVE_SIZE_8K) {
+			continue;
+		}
+
+		uint8_t stype = (val & DMP_SLAVE_TYPE) >> DMP_SLAVE_TYPE_S;
+		if (*regbase == 0 && stype == DMP_SLAVE_TYPE_SLAVE) {
+			*regbase = val & DMP_SLAVE_ADDR_BASE;
+		}
+		if (*wrapbase == 0 && stype == wraptype) {
+			*wrapbase = val & DMP_SLAVE_ADDR_BASE;
+		}
+	} while (*regbase == 0 || *wrapbase == 0);
+
+	return 0;
+}
+
+static int erom_scan(void)
+{
+	uint32_t erom_addr;
+	int ret;
+
+	ret = backplane_read32(BRCMF_SI_ENUM_BASE + CC_EROMPTR_OFFSET, &erom_addr);
+	if (ret != 0) {
+		LOG_ERR("erom_scan: read eromptr failed: %d", ret);
+		return ret;
+	}
+	LOG_INF("erom_scan: eromptr=0x%08x", erom_addr);
+
+	num_cores = 0;
+	uint8_t desc_type = 0;
+
+	while (desc_type != DMP_DESC_EOT) {
+		uint32_t val;
+		ret = dmp_get_desc(&erom_addr, &val, &desc_type);
+		if (ret != 0) {
+			LOG_ERR("erom_scan: desc read failed: %d", ret);
+			return ret;
+		}
+		if (!(val & DMP_DESC_VALID)) {
+			continue;
+		}
+		if (desc_type == DMP_DESC_EMPTY) {
+			continue;
+		}
+		if (desc_type != DMP_DESC_COMPONENT) {
+			continue;
+		}
+
+		uint16_t id = (val & DMP_COMP_PARTNUM) >> DMP_COMP_PARTNUM_S;
+
+		/* CompIdentB: nmw / nsw / rev */
+		uint32_t ident_b;
+		ret = dmp_get_desc(&erom_addr, &ident_b, &desc_type);
+		if (ret != 0) {
+			return ret;
+		}
+		if ((ident_b & DMP_DESC_TYPE_MSK) != DMP_DESC_COMPONENT) {
+			LOG_ERR("erom_scan: expected CompIdentB, got 0x%08x", ident_b);
+			return -EILSEQ;
+		}
+
+		uint8_t nmw = (ident_b & DMP_COMP_NUM_MWRAP) >> DMP_COMP_NUM_MWRAP_S;
+		uint8_t nsw = (ident_b & DMP_COMP_NUM_SWRAP) >> DMP_COMP_NUM_SWRAP_S;
+
+		if (nmw + nsw == 0 && id != BCMA_CORE_PMU && id != BCMA_CORE_GCI) {
+			continue;
+		}
+
+		uint32_t base = 0, wrap = 0;
+		ret = dmp_get_regaddr(&erom_addr, &base, &wrap);
+		if (ret != 0) {
+			continue;
+		}
+
+		if (num_cores >= MAX_CORES) {
+			LOG_WRN("erom_scan: MAX_CORES overflow at id=0x%03x", id);
+			continue;
+		}
+		cores[num_cores].id = id;
+		cores[num_cores].base = base;
+		cores[num_cores].wrapbase = wrap;
+		LOG_INF("erom_scan: core[%u] id=0x%03x base=0x%08x wrap=0x%08x",
+			num_cores, id, base, wrap);
+		num_cores++;
+	}
+
+	LOG_INF("erom_scan: discovered %u cores", num_cores);
+	return 0;
+}
+
+static const struct bcm_core *core_find(uint16_t id)
+{
+	for (unsigned int i = 0; i < num_cores; i++) {
+		if (cores[i].id == id) {
+			return &cores[i];
+		}
+	}
+	return NULL;
+}
+
+/* === AI (AXI) core reset/enable ============================================
+ *
+ * Mirrors Linux's brcmf_chip_ai_{iscoreup,coredisable,resetcore}.
+ * Each core has a "wrapper" address space (separate from its data base)
+ * where IOCTL and RESET_CTL live.
+ */
+
+static bool ai_iscoreup(uint32_t wrap)
+{
+	uint32_t v;
+	if (backplane_read32(wrap + BCMA_IOCTL, &v) != 0) {
+		return false;
+	}
+	bool clk_ok = (v & (BCMA_IOCTL_FGC | BCMA_IOCTL_CLK)) == BCMA_IOCTL_CLK;
+	if (backplane_read32(wrap + BCMA_RESET_CTL, &v) != 0) {
+		return false;
+	}
+	return clk_ok && ((v & BCMA_RESET_CTL_RESET) == 0);
+}
+
+static int ai_coredisable(uint32_t wrap, uint32_t prereset, uint32_t reset)
+{
+	uint32_t v;
+	int ret;
+
+	ret = backplane_read32(wrap + BCMA_RESET_CTL, &v);
+	if (ret != 0) {
+		return ret;
+	}
+
+	if ((v & BCMA_RESET_CTL_RESET) == 0) {
+		/* not in reset -- drive it in */
+		(void)backplane_write32(wrap + BCMA_IOCTL,
+					prereset | BCMA_IOCTL_FGC | BCMA_IOCTL_CLK);
+		(void)backplane_read32(wrap + BCMA_IOCTL, &v); /* flush */
+
+		(void)backplane_write32(wrap + BCMA_RESET_CTL, BCMA_RESET_CTL_RESET);
+		k_busy_wait(20);
+
+		for (int i = 0; i < 300; i++) {
+			(void)backplane_read32(wrap + BCMA_RESET_CTL, &v);
+			if (v == BCMA_RESET_CTL_RESET) {
+				break;
+			}
+			k_busy_wait(1);
+		}
+	}
+
+	(void)backplane_write32(wrap + BCMA_IOCTL,
+				reset | BCMA_IOCTL_FGC | BCMA_IOCTL_CLK);
+	(void)backplane_read32(wrap + BCMA_IOCTL, &v);  /* flush */
+	return 0;
+}
+
+static int ai_resetcore(uint32_t wrap, uint32_t prereset, uint32_t reset,
+			uint32_t postreset)
+{
+	uint32_t v;
+	int ret = ai_coredisable(wrap, prereset, reset);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* take core out of reset */
+	for (int count = 0; count < 50; count++) {
+		(void)backplane_read32(wrap + BCMA_RESET_CTL, &v);
+		if ((v & BCMA_RESET_CTL_RESET) == 0) {
+			break;
+		}
+		(void)backplane_write32(wrap + BCMA_RESET_CTL, 0);
+		k_busy_wait(50);
+	}
+
+	(void)backplane_write32(wrap + BCMA_IOCTL, postreset | BCMA_IOCTL_CLK);
+	(void)backplane_read32(wrap + BCMA_IOCTL, &v);  /* flush */
+	return 0;
+}
+
+/* === set_passive: prepare BCM43430A1 for firmware upload ===================
+ *
+ * Mirrors Linux's brcmf_chip_cm3_set_passive (BCM43430 uses ARM CM3):
+ *   1. halt ARM CM3 (so it doesn't fight us during the upload)
+ *   2. reset D11 MAC with PHYRESET + PHYCLOCKEN active
+ *   3. reset SOCRAM (brings it out of POR to operational)
+ *   4. disable bank-3 remap (BCM43430-specific quirk)
+ */
+static int set_passive(void)
+{
+	const struct bcm_core *arm = core_find(BCMA_CORE_ARM_CM3);
+	const struct bcm_core *d11 = core_find(BCMA_CORE_80211);
+	const struct bcm_core *sr  = core_find(BCMA_CORE_INTERNAL_MEM);
+
+	if (arm == NULL || d11 == NULL || sr == NULL) {
+		LOG_ERR("set_passive: missing core(s) arm=%p d11=%p sr=%p",
+			(const void *)arm, (const void *)d11, (const void *)sr);
+		return -ENODEV;
+	}
+
+	LOG_INF("set_passive: halt ARM CM3 (wrap=0x%08x)", arm->wrapbase);
+	int ret = ai_coredisable(arm->wrapbase, 0, 0);
+	if (ret != 0) {
+		LOG_ERR("set_passive: CM3 disable failed: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("set_passive: reset D11 PHY (wrap=0x%08x)", d11->wrapbase);
+	ret = ai_resetcore(d11->wrapbase,
+			   D11_BCMA_IOCTL_PHYRESET | D11_BCMA_IOCTL_PHYCLOCKEN,
+			   D11_BCMA_IOCTL_PHYCLOCKEN,
+			   D11_BCMA_IOCTL_PHYCLOCKEN);
+	if (ret != 0) {
+		LOG_ERR("set_passive: D11 reset failed: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("set_passive: reset SOCRAM (wrap=0x%08x base=0x%08x)",
+		sr->wrapbase, sr->base);
+	ret = ai_resetcore(sr->wrapbase, 0, 0, 0);
+	if (ret != 0) {
+		LOG_ERR("set_passive: SOCRAM reset failed: %d", ret);
+		return ret;
+	}
+
+	/* BCM43430 quirk: bank-3 remap aliases SOCRAM to a ROM region; turn
+	 * it off so firmware writes land in actual RAM.
+	 */
+	(void)backplane_write32(sr->base + SOCRAM_BANKIDX_OFFSET, 3);
+	(void)backplane_write32(sr->base + SOCRAM_BANKPDA_OFFSET, 0);
+	LOG_INF("set_passive: bank-3 remap disabled");
+
+	if (!ai_iscoreup(sr->wrapbase)) {
+		LOG_ERR("set_passive: SOCRAM did not come up");
+		return -EIO;
+	}
+	LOG_INF("set_passive: SOCRAM is up");
+	return 0;
+}
+
 static int bcm43430_bringup(void)
 {
 	int ret;
@@ -262,6 +739,172 @@ static int bcm43430_bringup(void)
 		LOG_ERR("SDIOPULLUP=0 write failed: %d", ret);
 		return ret;
 	}
+
+	/* Discover chip cores via the EROM table, then put the chip into
+	 * "passive" state (ARM halted, SOCRAM out of reset, bank-3 remap
+	 * disabled). After this, SOCRAM-addressed backplane reads/writes
+	 * succeed -- without it they fail with DATA_CRC at the SDIO bus
+	 * (Wall #4, isolated 2026-05-13).
+	 */
+	ret = erom_scan();
+	if (ret != 0) {
+		LOG_ERR("erom_scan failed: %d", ret);
+		return ret;
+	}
+
+	ret = set_passive();
+	if (ret != 0) {
+		LOG_ERR("set_passive failed: %d", ret);
+		return ret;
+	}
+
+	/* ---- Spike A: backplane write-path probe ----
+	 * Tests whether byte-mode CMD53 (windowed) writes reach the chip
+	 * and whether SBADDR sliding works for writes. The probes target
+	 * chip-side SOCRAM addresses; SOCRAM has NOT been reset out of POR
+	 * (no set_passive yet), so writes may be silently dropped -- that
+	 * is informative either way:
+	 *   OK            -- readback matches the pattern.
+	 *   WRITE_IGNORED -- readback == before-value (write didn't stick).
+	 *   MISMATCH      -- readback != before and != pattern.
+	 */
+	LOG_INF("--- Spike A: backplane write probe ---");
+
+	const uint32_t probe_pat = 0xDEADBEEFu;
+	static const struct {
+		uint32_t addr;
+		const char *label;
+	} probes_32b[] = {
+		{ 0x00000000u, "SOCRAM[0]" },
+		{ 0x00000100u, "SOCRAM[0x100]" },
+		{ 0x00004000u, "SOCRAM[0x4000]" },
+		{ 0x00008004u, "SOCRAM[0x8004] (win+1)" },
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(probes_32b); i++) {
+		uint32_t before = 0, after = 0;
+		int rc;
+
+		rc = backplane_read32(probes_32b[i].addr, &before);
+		if (rc != 0) {
+			LOG_ERR("probe %s: pre-read failed: %d",
+				probes_32b[i].label, rc);
+			continue;
+		}
+		rc = backplane_write32(probes_32b[i].addr, probe_pat);
+		if (rc != 0) {
+			LOG_ERR("probe %s: write failed: %d",
+				probes_32b[i].label, rc);
+			continue;
+		}
+		rc = backplane_read32(probes_32b[i].addr, &after);
+		if (rc != 0) {
+			LOG_ERR("probe %s: post-read failed: %d",
+				probes_32b[i].label, rc);
+			continue;
+		}
+		LOG_INF("probe32 %-22s before=0x%08x after=0x%08x %s",
+			probes_32b[i].label, before, after,
+			(after == probe_pat) ? "OK" :
+			(after == before)    ? "WRITE_IGNORED" : "MISMATCH");
+	}
+
+	/* 16-byte byte-mode burst at SOCRAM[0x40]. Exercises multi-byte
+	 * CMD53 byte-mode (len=16 < block_size=64 -> Zephyr's helper stays
+	 * in byte mode, single CMD53 transaction). Pattern is incrementing
+	 * bytes so byte-order bugs are visible in the hex dump.
+	 */
+	{
+		const uint32_t base = 0x00000040u;
+		uint8_t pat[16];
+		uint8_t before[16] = {0};
+		uint8_t after[16]  = {0};
+		int rc;
+
+		for (size_t i = 0; i < sizeof(pat); i++) {
+			pat[i] = 0xA0u + (uint8_t)i;
+		}
+
+		rc = backplane_read_bytes(base, before, sizeof(before));
+		if (rc == 0) {
+			rc = backplane_write_bytes(base, pat, sizeof(pat));
+		}
+		if (rc == 0) {
+			rc = backplane_read_bytes(base, after, sizeof(after));
+		}
+		if (rc != 0) {
+			LOG_ERR("burst16 @SOCRAM[0x%02x] aborted: %d", base, rc);
+		} else {
+			bool match = true;
+			for (size_t i = 0; i < sizeof(pat); i++) {
+				if (after[i] != pat[i]) {
+					match = false;
+					break;
+				}
+			}
+			LOG_INF("burst16 @SOCRAM[0x%02x]: %s",
+				base, match ? "OK" : "MISMATCH");
+			LOG_HEXDUMP_INF(before, sizeof(before), "before");
+			LOG_HEXDUMP_INF(pat,    sizeof(pat),    "wrote ");
+			LOG_HEXDUMP_INF(after,  sizeof(after),  "after ");
+		}
+	}
+
+	LOG_INF("--- Spike A complete ---");
+
+	/* ---- Spike B: block-mode CMD53 smoke test ----
+	 * 128-byte transfer (= 2 blocks of 64) at a fresh SOCRAM address.
+	 * Zephyr's sdio_io_rw_extended_helper switches to block-mode CMD53
+	 * when len > block_size, so this exercises a single CMD53 with
+	 * blocks=2. Confirms the SDHCI driver handles multi-block PIO
+	 * correctly before we attempt the ~432 KiB firmware upload.
+	 */
+	LOG_INF("--- Spike B: block-mode CMD53 (128B) ---");
+	{
+		const uint32_t base = 0x00000200u;
+		uint8_t pat[128];
+		uint8_t before[128] = {0};
+		uint8_t after[128]  = {0};
+		int rc;
+
+		/* Distinct, non-uniform pattern (0x80..0xFF) — won't be
+		 * confused with POR garbage on readback.
+		 */
+		for (size_t i = 0; i < sizeof(pat); i++) {
+			pat[i] = (uint8_t)(0x80u + i);
+		}
+
+		rc = backplane_read_bytes(base, before, sizeof(before));
+		if (rc == 0) {
+			rc = backplane_write_bytes(base, pat, sizeof(pat));
+		}
+		if (rc == 0) {
+			rc = backplane_read_bytes(base, after, sizeof(after));
+		}
+		if (rc != 0) {
+			LOG_ERR("Spike B aborted @ SOCRAM[0x%03x]: %d", base, rc);
+		} else {
+			size_t first_mismatch = sizeof(pat);
+			for (size_t i = 0; i < sizeof(pat); i++) {
+				if (after[i] != pat[i]) {
+					first_mismatch = i;
+					break;
+				}
+			}
+			if (first_mismatch == sizeof(pat)) {
+				LOG_INF("Spike B: 128B block-mode round-trip OK @ SOCRAM[0x%03x]",
+					base);
+			} else {
+				LOG_ERR("Spike B: MISMATCH at byte %u (expected 0x%02x got 0x%02x)",
+					(unsigned)first_mismatch,
+					pat[first_mismatch], after[first_mismatch]);
+				LOG_HEXDUMP_INF(before, 32, "before[:32]");
+				LOG_HEXDUMP_INF(pat,    32, "wrote[:32] ");
+				LOG_HEXDUMP_INF(after,  32, "after[:32] ");
+			}
+		}
+	}
+	LOG_INF("--- Spike B complete ---");
 
 	LOG_INF("--- subsystem bring-up complete ---");
 	return 0;
