@@ -61,7 +61,7 @@
 
 const mp_obj_module_t mp_module___main__ = {
     .base = { &mp_type_module },
-    .globals = (mp_obj_dict_t *)&MP_STATE_VM(dict_main),
+    .globals = (mp_obj_dict_t *)&MP_STATE_VM_STATIC(dict_main),
 };
 
 MP_REGISTER_MODULE(MP_QSTR___main__, mp_module___main__);

@@ -1,0 +1,88 @@
+# ESP32-S3 32MB flash configuration
+
+# CPU: 240MHz (native for S3, improves WebREPL responsiveness)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Use custom partition table (build.sh copies to ports/esp32/boards/ESP32_S3_32/)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/ESP32_S3_32/partitions-32mb.csv"
+
+# Octal PSRAM configuration for N32R8 (32MB Flash + 8MB Octal PSRAM)
+# Note: ESP-IDF 5.4+ auto-detects SPIRAM size, no CONFIG_SPIRAM_SIZE_* needed
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=49152
+
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+CONFIG_ESP32S3_FLASH_MODE_OCT=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_8KB=y
+CONFIG_ESP32S3_DATA_CACHE_8KB=y
+
+# Memory allocation — dynamic TLS buffers for concurrent HTTPS connections.
+# Dynamic buffer frees/resizes I/O buffers after handshake to save DRAM.
+# ALWAYSINTERNAL=16384 ensures reallocated TLS buffers stay in internal
+# DMA-capable RAM (required for AES-GCM — PSRAM causes INVALID_MAC -0x7100).
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
+
+# TLS record buffers — 16KB in is the TLS standard max record size.
+# Must be 16KB to handle servers that send full-size records (e.g. Telegram file downloads).
+# DRAM impact is manageable now that request_slots live in PSRAM (~110KB freed).
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# USB configuration (ESP32-S3 has USB-OTG)
+CONFIG_USB_OTG_SUPPORTED=y
+
+# USB Modem dual interface for AT + PPP (SIM7600)
+CONFIG_MODEM_SUPPORT_SECONDARY_AT_PORT=y
+CONFIG_MODEM_USB_ITF=0x03
+CONFIG_MODEM_USB_ITF2=0x02
+
+# LWIP/Network configuration
+CONFIG_LWIP_HOOK_IP6_ROUTE_DEFAULT=y
+CONFIG_LWIP_IPV6=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_MAX_UDP_PCBS=8
+
+# Enable WebSocket support in HTTP server (required for wsserver module)
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# mbedTLS debug disabled - causes timing issues with WebSocket data
+# CONFIG_MBEDTLS_DEBUG is not set
+# CONFIG_MBEDTLS_SSL_DEBUG_C is not set
+
+# Enable TLS certificate bundle and ALPN for httpclient module
+# (overrides sdkconfig.base which disables these for vanilla MicroPython)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_SSL_ALPN=y
+
+# Watchdog timers (increase for long operations)
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=800
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# FreeRTOS trace (for debugging)
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# ESP-IDF Logging Configuration
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL=3
+CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+CONFIG_LOG_DEFAULT_LEVEL=1

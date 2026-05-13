@@ -171,6 +171,9 @@ list(APPEND IDF_COMPONENTS
     esp_common
     esp_eth
     esp_event
+    esp_http_server  # Required for pyDirect httpserver
+    esp_https_server  # Required for pyDirect httpserver (HTTPS support)
+    esp_http_client  # Required for pyDirect httpclient
     esp_hw_support
     esp_netif
     esp_partition

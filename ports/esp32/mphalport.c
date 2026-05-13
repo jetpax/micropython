@@ -149,6 +149,19 @@ int mp_hal_stdin_rx_chr(void) {
 }
 
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
+    // BVM stdout capture: redirect to buffer when running in BVM context.
+    // Uses weak symbol — if BVM module is not compiled in, the fallback
+    // discards output silently (but this branch is never reached anyway
+    // since mp_active_ctx == &mp_state_ctx without BVM).
+    extern mp_state_ctx_t mp_state_ctx;
+    if (mp_active_ctx != &mp_state_ctx) {
+        extern void bvm_capture_stdout(const char *str, size_t len) __attribute__((weak));
+        if (bvm_capture_stdout) {
+            bvm_capture_stdout(str, len);
+        }
+        return len;
+    }
+
     // Only release the GIL if many characters are being sent
     mp_uint_t ret = len;
     bool did_write = false;

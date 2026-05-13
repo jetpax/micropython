@@ -47,6 +47,22 @@
 #define DEBUG_printf(...) (void)0
 #endif
 
+// Workaround for ESP-IDF Issue #16233: when ESP-Hosted uses SDIO transport,
+// the SDMMC host controller is already initialized. Calling sdmmc_host_init()
+// again disturbs the SDIO state and crashes the C6 coprocessor link.
+// Replace host init/deinit with no-ops so only sdmmc_host_init_slot() runs.
+#if SOC_SDMMC_HOST_SUPPORTED && defined(CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE)
+#define WORKAROUND_HOSTED_SDMMC_HOST_INIT 1
+static esp_err_t sdmmc_host_init_noop(void) {
+    return ESP_OK;
+}
+static esp_err_t sdmmc_host_deinit_noop(void) {
+    return ESP_OK;
+}
+#else
+#define WORKAROUND_HOSTED_SDMMC_HOST_INIT 0
+#endif
+
 //
 // There are three layers of abstraction: host, slot and card.
 // Creating an SD Card object will initialise the host and slot.
@@ -310,6 +326,12 @@ static mp_obj_t machine_sdcard_make_new(const mp_obj_type_t *type, size_t n_args
         sdmmc_host_t _temp_host = SDMMC_HOST_DEFAULT();
         _temp_host.max_freq_khz = freq / 1000;
         _temp_host.slot = slot_num;
+        #if WORKAROUND_HOSTED_SDMMC_HOST_INIT
+        // ESP-Hosted already initialized the SDMMC host controller for SDIO.
+        // Skip host init/deinit to avoid disturbing the C6 SDIO link.
+        _temp_host.init = &sdmmc_host_init_noop;
+        _temp_host.deinit = &sdmmc_host_deinit_noop;
+        #endif
         self->host = _temp_host;
     }
     #endif

@@ -90,6 +90,10 @@
 #ifdef CONFIG_NETWORKING
 #define MICROPY_PY_SOCKET           (1)
 #endif
+/* pyDirect: enable os.dupterm() so webrepl can register itself.
+ * Slot count = 1. NOTIFY disabled because the zephyr port has no
+ * stdin_ringbuf (NOTIFY is for ports that funnel stdin through one). */
+#define MICROPY_PY_OS_DUPTERM       (1)
 #ifdef CONFIG_BT
 #define MICROPY_PY_BLUETOOTH        (1)
 #ifdef CONFIG_BT_CENTRAL
@@ -171,9 +175,11 @@ void mp_hal_signal_event(void);
 #define MICROPY_PY_MACHINE_ADC_READ_UV (1)
 #endif
 
-#if DT_HAS_COMPAT_STATUS_OKAY(micropython_heap)
+/* Enabled unconditionally so additional heap regions added via gc_add() at
+ * runtime (e.g. RP2350 APS6404L pSRAM) are tracked correctly by the GC. The
+ * existing micropython,heap DT-driven path in main.c remains the canonical
+ * way to declare extra heaps for Zephyr boards that have a memory-region. */
 #define MICROPY_GC_SPLIT_HEAP (1)
-#endif
 
 typedef long mp_off_t;
 

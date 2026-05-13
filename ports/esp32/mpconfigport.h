@@ -87,7 +87,9 @@
 #define MICROPY_PY_THREAD_GIL_VM_DIVISOR    (32)
 
 #define MICROPY_GC_SPLIT_HEAP               (1)
+#ifndef MICROPY_GC_SPLIT_HEAP_AUTO
 #define MICROPY_GC_SPLIT_HEAP_AUTO          (1)
+#endif
 
 // extended modules
 #ifndef MICROPY_PY_ESPNOW
@@ -112,7 +114,7 @@
 #endif // MICROPY_PY_BLUETOOTH
 
 #define MICROPY_PY_RANDOM_SEED_INIT_FUNC    (esp_random())
-#define MICROPY_PY_OS_DUPTERM               (1)
+#define MICROPY_PY_OS_DUPTERM               (2)
 #define MICROPY_PY_OS_DUPTERM_NOTIFY        (1)
 #define MICROPY_PY_OS_SYNC                  (1)
 #define MICROPY_PY_OS_UNAME                 (1)
@@ -159,6 +161,7 @@
 #define MICROPY_PY_MACHINE_I2S_FINALISER    (1)
 #define MICROPY_PY_MACHINE_I2S_CONSTANT_RX  (I2S_DIR_RX)
 #define MICROPY_PY_MACHINE_I2S_CONSTANT_TX  (I2S_DIR_TX)
+#define MICROPY_PY_MACHINE_I2S_MCK          (1)
 #define MICROPY_PY_MACHINE_UART             (1)
 #define MICROPY_PY_MACHINE_UART_INCLUDEFILE "ports/esp32/machine_uart.c"
 #define MICROPY_PY_MACHINE_UART_SENDBREAK   (1)

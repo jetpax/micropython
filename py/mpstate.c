@@ -31,3 +31,7 @@ mp_dynamic_compiler_t mp_dynamic_compiler = {0};
 #endif
 
 mp_state_ctx_t mp_state_ctx;
+
+// Thread-local pointer to the active interpreter context.
+// Defaults to &mp_state_ctx (AVM). BVM overrides per-task.
+__thread mp_state_ctx_t *mp_active_ctx = &mp_state_ctx;

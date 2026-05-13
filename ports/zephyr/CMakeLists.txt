@@ -34,6 +34,8 @@ string(TOUPPER          ZEPHYR_${BOARD} MICROPY_BOARD)
 
 include(${MICROPY_DIR}/py/py.cmake)
 include(${MICROPY_DIR}/extmod/extmod.cmake)
+# pyDirect: enable USER_C_MODULES (parity with esp32/rp2/etc. ports).
+include(${MICROPY_DIR}/py/usermod.cmake)
 
 list(APPEND DTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/dts)
 
@@ -139,6 +141,7 @@ set(MICROPY_SOURCE_QSTR
     ${MICROPY_SOURCE_DRIVERS}
     ${MICROPY_SOURCE_LIB}
     ${MICROPY_SOURCE_PORT}
+    ${MICROPY_SOURCE_USERMOD}
 )
 
 zephyr_get_include_directories_for_lang(C includes)
@@ -154,6 +157,7 @@ zephyr_library_include_directories(
     ${MICROPY_INC_CORE}
     ${MICROPY_PORT_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${MICROPY_INC_USERMOD}
 )
 
 zephyr_library_compile_options(
@@ -183,5 +187,9 @@ target_sources(app PRIVATE
     src/zephyr_getchar.c
     src/usbd.c
 )
+
+if(CONFIG_BCM43430_BRINGUP)
+    target_sources(app PRIVATE src/bcm43430_bringup.c)
+endif()
 
 target_link_libraries(app PRIVATE ${MICROPY_TARGET})

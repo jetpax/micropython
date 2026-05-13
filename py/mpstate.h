@@ -331,13 +331,25 @@ typedef struct _mp_state_ctx_t {
 
 extern mp_state_ctx_t mp_state_ctx;
 
-#define MP_STATE_VM(x) (mp_state_ctx.vm.x)
-#define MP_STATE_MEM(x) (mp_state_ctx.mem.x)
-#define MP_STATE_MAIN_THREAD(x) (mp_state_ctx.thread.x)
+// Thread-local pointer to the active interpreter context.
+// Each FreeRTOS task gets its own copy via the Xtensa THREADPTR register.
+// AVM (host) tasks use &mp_state_ctx (the default initializer).
+// BVM sets this to its own PSRAM-allocated context at startup.
+extern __thread mp_state_ctx_t *mp_active_ctx;
+
+#define MP_STATE_VM(x) (mp_active_ctx->vm.x)
+#define MP_STATE_MEM(x) (mp_active_ctx->mem.x)
+#define MP_STATE_MAIN_THREAD(x) (mp_active_ctx->thread.x)
+
+// Compile-time constant address for static/ROM table initializers.
+// Always resolves through the global mp_state_ctx (AVM context).
+// Use this ONLY in static initializer expressions where &MP_STATE_VM()
+// must be a compile-time constant. Runtime code should use MP_STATE_VM().
+#define MP_STATE_VM_STATIC(x) (mp_state_ctx.vm.x)
 
 #if MICROPY_PY_THREAD
 #define MP_STATE_THREAD(x) (mp_thread_get_state()->x)
-#define mp_thread_is_main_thread() (mp_thread_get_state() == &mp_state_ctx.thread)
+#define mp_thread_is_main_thread() (mp_thread_get_state() == &mp_active_ctx->thread)
 #else
 #define MP_STATE_THREAD(x)  MP_STATE_MAIN_THREAD(x)
 #define mp_thread_is_main_thread() (true)

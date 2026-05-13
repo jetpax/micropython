@@ -85,6 +85,10 @@ if(DEFINED ENV{CFLAGS_EXTRA})
   list(APPEND MICROPY_CPP_FLAGS ${CFLAGS_EXTRA})  # ... a list
 endif()
 
+# LVGL/pyDirect patch: Remove duplicate flags to prevent qstr preprocessing
+# conflicts when LVGL bindings add their own CPP flags during binding generation
+list(REMOVE_DUPLICATES MICROPY_CPP_FLAGS)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 target_sources(${MICROPY_TARGET} PRIVATE

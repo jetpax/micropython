@@ -74,6 +74,9 @@ typedef struct _machine_i2s_obj_t {
     mp_hal_pin_obj_t sck;
     mp_hal_pin_obj_t ws;
     mp_hal_pin_obj_t sd;
+    #if MICROPY_PY_MACHINE_I2S_MCK
+    mp_hal_pin_obj_t mck;
+    #endif
     i2s_dir_t mode;
     i2s_data_bit_width_t bits;
     format_t format;
@@ -340,6 +343,13 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     self->sck = sck;
     self->ws = ws;
     self->sd = sd;
+    #if MICROPY_PY_MACHINE_I2S_MCK
+    if (args[ARG_mck].u_obj != mp_const_none) {
+        self->mck = machine_pin_get_id(args[ARG_mck].u_obj);
+    } else {
+        self->mck = I2S_GPIO_UNUSED;
+    }
+    #endif
     self->mode = mode;
     self->bits = bits;
     self->format = format;
@@ -375,7 +385,11 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(self->rate),
         .slot_cfg = slot_cfg,
         .gpio_cfg = {
+            #if MICROPY_PY_MACHINE_I2S_MCK
+            .mclk = self->mck,
+            #else
             .mclk = I2S_GPIO_UNUSED,
+            #endif
             .bclk = self->sck,
             .ws = self->ws,
             .invert_flags = {

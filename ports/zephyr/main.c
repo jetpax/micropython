@@ -129,6 +129,21 @@ soft_reset:
     mp_cstack_init_with_sp_here(CONFIG_MAIN_STACK_SIZE);
     #if MICROPY_ENABLE_GC
     gc_init(heap, heap + sizeof(heap));
+    #if MICROPY_GC_SPLIT_HEAP && defined(CONFIG_MSPI_RPI_PICO)
+    /* RP2350 APS6404L pSRAM XIP at 0x11000000 (driven by mspi_rpi_pico.c +
+     * memc_mspi_aps6404l.c). Probe before extending GC: if the memc init
+     * failed, the m[1] window won't respond and adding it to GC would
+     * later crash. The probe writes two magic words and reads them back. */
+    {
+        volatile uint32_t *psram = (volatile uint32_t *)0x11000000UL;
+        psram[0] = 0xa5a5a5a5UL;
+        psram[1] = 0x5a5a5a5aUL;
+        if (psram[0] == 0xa5a5a5a5UL && psram[1] == 0x5a5a5a5aUL) {
+            gc_add((void *)0x11000000UL,
+                   (void *)(0x11000000UL + (8UL * 1024UL * 1024UL)));
+        }
+    }
+    #endif
     #if MICROPY_GC_SPLIT_HEAP && DT_HAS_COMPAT_STATUS_OKAY(micropython_heap)
     DT_FOREACH_STATUS_OKAY(micropython_heap, MICROPY_HEAP_ADD)
     #endif
