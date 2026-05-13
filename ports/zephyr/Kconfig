@@ -59,17 +59,6 @@ config MICROPY_USB_DEVICE_PID
 	hex "USB PID"
 	default 0x0001
 
-config BCM43430_BRINGUP
-	bool "Compile bring-up shim for BCM43430A1 on Pi Zero 2 W"
-	default n
-	select SDIO_STACK
-	help
-	  Compile src/bcm43430_bringup.c, which registers a SYS_INIT
-	  at APPLICATION priority that calls sd_init() and sdio_init_func()
-	  against the SDHC device aliased as sdhc0. Used during Wi-Fi
-	  bring-up to validate Zephyr's SDIO subsystem path; drop once
-	  a brcmfmac-style WLAN driver lands under drivers/wifi/.
-
 endmenu # MicroPython Options
 
 source "Kconfig.zephyr"
