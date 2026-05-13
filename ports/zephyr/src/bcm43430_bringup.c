@@ -904,10 +904,10 @@ static int spike_c_first_ioctl(void)
  * The 9-bit block-count field encodes 0 as 512, but on BCM43430A1 + BCM2835
  * Arasan, the 512-block CMD53 wedges the chip-side state machine -- after
  * the write completes (no controller-side error), the chip becomes
- * unresponsive (DATA_TIMEOUT on the next CMD53). Circle's sdiorwext caps
- * at 511 for the same reason. With block_size=64 that's 511*64 = 32704
- * bytes per CMD53; per F1 window (32 KiB = 32768) we issue 511 blocks +
- * one 64-byte byte-mode tail.
+ * unresponsive (DATA_TIMEOUT on the next CMD53). Other working drivers
+ * for this chip family also cap at 511 empirically. With block_size=64
+ * that's 511*64 = 32704 bytes per CMD53; per F1 window (32 KiB = 32768)
+ * we issue 511 blocks + one 64-byte byte-mode tail.
  */
 #define MAX_CMD53_BLOCK_BYTES  (511 * 64)
 
