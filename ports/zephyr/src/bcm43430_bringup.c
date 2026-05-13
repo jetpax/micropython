@@ -68,7 +68,8 @@ LOG_MODULE_REGISTER(bcm43430_bringup, LOG_LEVEL_INF);
 
 static const struct device *const sdhc_dev = DEVICE_DT_GET(DT_ALIAS(sdhc0));
 static struct sd_card card;
-static struct sdio_func backplane;
+static struct sdio_func backplane;  /* F1: backplane window + IOCTL register I/O */
+static struct sdio_func radio;      /* F2: data + control IOCTL path */
 
 /* Set the function-1 backplane window. Per brcmfmac's
  * brcmf_sdiod_set_backplane_window: write the 3 high bytes of the
@@ -689,6 +690,206 @@ static int set_active(void)
 	return 0;
 }
 
+/* === Spike C: first BCDC IOCTL to running firmware =========================
+ *
+ * Wire format for an SDIO IOCTL (mirrors zerowi's IOCTL_MSG, which matches
+ * Linux brcmfmac's SDPCM + BCDC stack):
+ *   [4 B  SDPCM frame:  uint16 len, uint16 ~len]
+ *   [8 B  SDPCM sw hdr: seq, chan, nextlen, hdrlen, flow, credit, rsv x2]
+ *   [16 B BCDC/CDC hdr: cmd, outlen, inlen, flags, status]
+ *   [payload: variable name (incl. NUL) for GET, or data for SET]
+ *   [padded to 4-byte alignment]
+ *
+ * For GET_VAR("cur_etheraddr"): payload = name+NUL on the way out, chip
+ * replies with the 6-byte MAC in the response payload. This is a one-shot
+ * probe -- proves F2 + the BCDC protocol stack work; doesn't try to model
+ * the full driver yet.
+ */
+
+#define WLC_GET_VAR             262
+#define SDPCM_CHAN_CTRL         0
+#define BCDC_FLAG_ERROR         0x01
+#define BCDC_FLAG_SET           0x02
+#define BCDC_REQ_ID_SHIFT       16
+
+#define F2_FIFO_ADDR            0x8000      /* with SB_ACCESS_2_4B_FLAG bit */
+#define F2_BLOCK_SIZE           512
+
+struct sdpcm_frame_hdr {
+	uint16_t len;
+	uint16_t notlen;
+} __packed;
+
+struct sdpcm_sw_hdr {
+	uint8_t seq;
+	uint8_t chan;
+	uint8_t nextlen;
+	uint8_t hdrlen;
+	uint8_t flow;
+	uint8_t credit;
+	uint8_t reserved[2];
+} __packed;
+
+struct cdc_hdr {
+	uint32_t cmd;
+	uint16_t outlen;
+	uint16_t inlen;
+	uint32_t flags;
+	uint32_t status;
+} __packed;
+
+static uint8_t  sdpcm_txseq;
+static uint16_t bcdc_reqid;
+
+static int spike_c_first_ioctl(void)
+{
+	int ret;
+	const char *var = "cur_etheraddr";
+	const size_t var_len = strlen(var) + 1;  /* include trailing NUL */
+
+	LOG_INF("--- Spike C: F2 setup + first IOCTL ---");
+
+	ret = sdio_init_func(&card, &radio, SDIO_FUNC_NUM_2);
+	if (ret != 0) {
+		LOG_ERR("Spike C: sdio_init_func(F2) failed: %d", ret);
+		return ret;
+	}
+	ret = sdio_enable_func(&radio);
+	if (ret != 0) {
+		LOG_ERR("Spike C: sdio_enable_func(F2) failed: %d", ret);
+		return ret;
+	}
+	ret = sdio_set_block_size(&radio, F2_BLOCK_SIZE);
+	if (ret != 0) {
+		LOG_ERR("Spike C: sdio_set_block_size(F2, %u) failed: %d",
+			F2_BLOCK_SIZE, ret);
+		return ret;
+	}
+	LOG_INF("Spike C: F2 enabled, block_size=%u", F2_BLOCK_SIZE);
+
+	static uint8_t tx_buf[128] __aligned(4);
+	static uint8_t rx_buf[256] __aligned(4);
+
+	memset(tx_buf, 0, sizeof(tx_buf));
+
+	struct sdpcm_frame_hdr *frame = (void *)tx_buf;
+	struct sdpcm_sw_hdr *sw = (void *)(tx_buf + sizeof(*frame));
+	struct cdc_hdr *cdc = (void *)((uint8_t *)sw + sizeof(*sw));
+	uint8_t *payload = (uint8_t *)cdc + sizeof(*cdc);
+
+	const size_t hdr_len = sizeof(*frame) + sizeof(*sw) + sizeof(*cdc);
+	const size_t payload_len = var_len;  /* GET: send just the name */
+	const size_t total = hdr_len + payload_len;
+	const size_t padded = (total + 3) & ~(size_t)3;
+
+	frame->len = (uint16_t)total;
+	frame->notlen = (uint16_t)~frame->len;
+	sw->seq = sdpcm_txseq++;
+	sw->chan = SDPCM_CHAN_CTRL;
+	sw->hdrlen = (uint8_t)(sizeof(*frame) + sizeof(*sw));   /* = 12 */
+
+	cdc->cmd = WLC_GET_VAR;
+	cdc->outlen = (uint16_t)payload_len;
+	cdc->inlen = 0;
+	bcdc_reqid++;
+	cdc->flags = ((uint32_t)bcdc_reqid << BCDC_REQ_ID_SHIFT);
+
+	memcpy(payload, var, var_len);
+
+	LOG_INF("Spike C: TX GET_VAR(\"%s\") len=%u padded=%u reqid=%u",
+		var, (unsigned)total, (unsigned)padded, bcdc_reqid);
+
+	ret = sdio_write_addr(&radio, F2_FIFO_ADDR, tx_buf, padded);
+	if (ret != 0) {
+		LOG_ERR("Spike C: F2 write failed: %d", ret);
+		return ret;
+	}
+
+	/* Give the firmware time to handle the IOCTL. */
+	k_msleep(50);
+
+	/* Drain F2 until we find a control-channel frame (chan=0) whose CDC
+	 * request-ID matches ours. The chip can have queued event frames
+	 * (chan=1) and/or credit-grant signaling frames from the post-boot
+	 * window before our IOCTL response. A real driver would poll the
+	 * SDIO core's INT_STATUS bits to know what's available; for the spike
+	 * we just read in a loop with a brief sleep.
+	 */
+	const int max_retries = 20;
+	bool matched = false;
+	uint16_t rsp_outlen = 0;
+	uint8_t *rpayload = NULL;
+	struct cdc_hdr *rcdc = NULL;
+
+	for (int retry = 0; retry < max_retries && !matched; retry++) {
+		memset(rx_buf, 0, sizeof(rx_buf));
+		ret = sdio_read_addr(&radio, F2_FIFO_ADDR, rx_buf, sizeof(rx_buf));
+		if (ret != 0) {
+			LOG_ERR("Spike C: F2 read #%d failed: %d", retry, ret);
+			return ret;
+		}
+
+		struct sdpcm_frame_hdr *rfrm = (void *)rx_buf;
+		struct sdpcm_sw_hdr *rsw = (void *)(rx_buf + sizeof(*rfrm));
+
+		uint16_t hdr_xor = rfrm->len ^ rfrm->notlen;
+		if (hdr_xor != 0xFFFF) {
+			LOG_WRN("Spike C: read #%d: bad frame xor 0x%04x (len=%u notlen=0x%04x)",
+				retry, hdr_xor, rfrm->len, rfrm->notlen);
+			LOG_HEXDUMP_INF(rx_buf, 32, "rx[:32]");
+			k_msleep(10);
+			continue;
+		}
+
+		LOG_INF("Spike C: rx #%d: len=%u seq=%u chan=%u credit=%u hdrlen=%u",
+			retry, rfrm->len, rsw->seq, rsw->chan,
+			rsw->credit, rsw->hdrlen);
+
+		if (rsw->chan != SDPCM_CHAN_CTRL) {
+			/* event (chan=1), data (chan=2), or signalling: skip */
+			k_msleep(10);
+			continue;
+		}
+
+		rcdc = (void *)((uint8_t *)rsw + sizeof(*rsw));
+		uint16_t rsp_reqid = (uint16_t)(rcdc->flags >> BCDC_REQ_ID_SHIFT);
+		LOG_INF("Spike C: rx #%d cdc: cmd=%u outlen=%u flags=0x%08x status=%u reqid=%u",
+			retry, rcdc->cmd, rcdc->outlen, rcdc->flags,
+			rcdc->status, rsp_reqid);
+
+		if (rsp_reqid != bcdc_reqid) {
+			LOG_WRN("Spike C: rx #%d: control frame but reqid mismatch (got %u, want %u)",
+				retry, rsp_reqid, bcdc_reqid);
+			k_msleep(10);
+			continue;
+		}
+
+		if (rcdc->flags & BCDC_FLAG_ERROR) {
+			LOG_ERR("Spike C: chip returned BCDC error (status=%u)",
+				rcdc->status);
+			return -EIO;
+		}
+
+		rpayload = (uint8_t *)rcdc + sizeof(*rcdc);
+		rsp_outlen = rcdc->outlen;
+		matched = true;
+	}
+
+	if (!matched) {
+		LOG_ERR("Spike C: no IOCTL response after %d retries", max_retries);
+		return -ETIMEDOUT;
+	}
+
+	LOG_INF("Spike C: chip MAC = %02x:%02x:%02x:%02x:%02x:%02x",
+		rpayload[0], rpayload[1], rpayload[2],
+		rpayload[3], rpayload[4], rpayload[5]);
+	uint16_t pl_show = MIN((uint16_t)32, rsp_outlen);
+	LOG_HEXDUMP_INF(rpayload, pl_show, "response payload");
+
+	LOG_INF("--- Spike C complete ---");
+	return 0;
+}
+
 /* === Bulk RAM read/write across the F1 backplane window ====================
  *
  * Mirrors Linux's brcmf_sdiod_ramrw. Each chunk:
@@ -1304,6 +1505,11 @@ static int bcm43430_bringup(void)
 		return ret;
 	}
 	LOG_INF("--- ARM release + boot complete ---");
+
+	/* Spike C is a probe: log success/failure but don't abort the rest of
+	 * the bring-up so the REPL still comes up.
+	 */
+	(void)spike_c_first_ioctl();
 
 	LOG_INF("--- subsystem bring-up complete ---");
 	return 0;
