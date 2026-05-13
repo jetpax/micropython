@@ -14,6 +14,8 @@
  * is built under drivers/wifi/. Drop once that lands.
  */
 
+#include <string.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/init.h>
@@ -594,6 +596,234 @@ static int set_passive(void)
 	return 0;
 }
 
+/* === Bulk RAM read/write across the F1 backplane window ====================
+ *
+ * Mirrors Linux's brcmf_sdiod_ramrw. Each chunk:
+ *   1. Slide the SBADDR window to cover the current chip-side address.
+ *   2. Transfer up to 32 KiB (one F1 window worth) via CMD53 (Zephyr's
+ *      sdio_(read|write)_addr picks block mode when len > block_size).
+ *   3. Continue across windows until size bytes done.
+ */
+#define SBSDIO_SB_OFT_ADDR_LIMIT  0x8000  /* 32 KiB F1 window size */
+
+/* Cap per-CMD53 block-mode transfers at 511 blocks (not the spec's max 512).
+ * The 9-bit block-count field encodes 0 as 512, but on BCM43430A1 + BCM2835
+ * Arasan, the 512-block CMD53 wedges the chip-side state machine -- after
+ * the write completes (no controller-side error), the chip becomes
+ * unresponsive (DATA_TIMEOUT on the next CMD53). Circle's sdiorwext caps
+ * at 511 for the same reason. With block_size=64 that's 511*64 = 32704
+ * bytes per CMD53; per F1 window (32 KiB = 32768) we issue 511 blocks +
+ * one 64-byte byte-mode tail.
+ */
+#define MAX_CMD53_BLOCK_BYTES  (511 * 64)
+
+#define BCM43430_VERIFY_UPLOAD     1   /* post-upload readback verify (cheap) */
+#define BCM43430_VERIFY_PER_WINDOW 0   /* readback after each window (debug only) */
+
+/* forward decl so the per-window verify hook can call into verify_memory */
+static int verify_memory(uint32_t chip_addr, const uint8_t *expected, uint32_t size);
+
+static int ramrw(bool write, uint32_t chip_addr, uint8_t *buf, uint32_t size)
+{
+	while (size > 0) {
+		uint32_t window_chip_addr = chip_addr;
+		const uint8_t *window_buf = buf;
+
+		uint32_t sdaddr = chip_addr & SBSDIO_SB_OFT_ADDR_MASK;
+		uint32_t window_left = SBSDIO_SB_OFT_ADDR_LIMIT - sdaddr;
+		uint32_t chunk = MIN(size, window_left);
+		/* Cap at 511 blocks per CMD53 -- see MAX_CMD53_BLOCK_BYTES note. */
+		if (chunk > MAX_CMD53_BLOCK_BYTES) {
+			chunk = MAX_CMD53_BLOCK_BYTES;
+		}
+		/* The F1->backplane bridge with the SB_ACCESS_2_4B_FLAG bit
+		 * set requires 4-aligned transfer counts -- each 4-byte run
+		 * is one 32-bit backplane access. Linux's brcmf_sdiod_ramrw
+		 * rounds up via skb->len + 3 padding; we split off the 1-3
+		 * byte tail and write it through a 4-byte staging buffer
+		 * (pad bytes land in unused chip-RAM past the logical end).
+		 */
+		uint32_t aligned_chunk = chunk & ~3u;
+		uint32_t tail = chunk - aligned_chunk;
+
+		int ret = set_backplane_window(chip_addr);
+		if (ret != 0) {
+			LOG_ERR("ramrw: SBADDR set @ chip 0x%08x failed: %d",
+				chip_addr, ret);
+			return ret;
+		}
+
+		uint32_t off = sdaddr | SBSDIO_SB_ACCESS_2_4B_FLAG;
+
+		if (aligned_chunk > 0) {
+			ret = write
+				? sdio_write_addr(&backplane, off, buf, aligned_chunk)
+				: sdio_read_addr(&backplane, off, buf, aligned_chunk);
+			if (ret != 0) {
+				LOG_ERR("ramrw: %s @ chip 0x%08x len %u failed: %d",
+					write ? "write" : "read",
+					chip_addr, aligned_chunk, ret);
+				return ret;
+			}
+		}
+
+		if (tail > 0) {
+			uint8_t tail_buf[4] __aligned(4) = {0};
+			uint32_t tail_off = off + aligned_chunk;
+
+			if (write) {
+				memcpy(tail_buf, buf + aligned_chunk, tail);
+				ret = sdio_write_addr(&backplane, tail_off,
+						      tail_buf, sizeof(tail_buf));
+			} else {
+				ret = sdio_read_addr(&backplane, tail_off,
+						     tail_buf, sizeof(tail_buf));
+				if (ret == 0) {
+					memcpy(buf + aligned_chunk, tail_buf, tail);
+				}
+			}
+			if (ret != 0) {
+				LOG_ERR("ramrw: %s tail @ chip 0x%08x len %u failed: %d",
+					write ? "write" : "read",
+					chip_addr + aligned_chunk, tail, ret);
+				return ret;
+			}
+		}
+
+#if BCM43430_VERIFY_PER_WINDOW
+		if (write) {
+			int v = verify_memory(window_chip_addr, window_buf, chunk);
+			if (v != 0) {
+				LOG_ERR("ramrw: per-window verify FAIL @ chip 0x%08x len %u",
+					window_chip_addr, chunk);
+				return v;
+			}
+			LOG_INF("ramrw: per-window verify OK @ chip 0x%08x len %u",
+				window_chip_addr, chunk);
+		}
+#endif
+
+		buf += chunk;
+		chip_addr += chunk;
+		size -= chunk;
+	}
+	return 0;
+}
+
+/* Read back from chip RAM and compare against `expected`. On the first
+ * mismatch, log the divergent byte and return -EIO. Chunked through a
+ * static buffer to avoid stack pressure on the long firmware verify.
+ */
+static int verify_memory(uint32_t chip_addr, const uint8_t *expected,
+			 uint32_t size)
+{
+	static uint8_t readback[1024];
+	uint32_t verified = 0;
+
+	while (size > 0) {
+		uint32_t chunk = MIN(size, (uint32_t)sizeof(readback));
+		int ret = ramrw(false, chip_addr, readback, chunk);
+		if (ret != 0) {
+			return ret;
+		}
+		for (uint32_t i = 0; i < chunk; i++) {
+			if (readback[i] != expected[i]) {
+				LOG_ERR("verify: mismatch @ offset %u (chip 0x%08x): exp 0x%02x got 0x%02x",
+					verified + i, chip_addr + i,
+					expected[i], readback[i]);
+				return -EIO;
+			}
+		}
+		chip_addr += chunk;
+		expected += chunk;
+		size -= chunk;
+		verified += chunk;
+	}
+	return 0;
+}
+
+/* === NVRAM strip ===========================================================
+ *
+ * Convert key=value text NVRAM into the chip-format the firmware expects:
+ *   - Skip '#' comments, empty lines, leading/trailing whitespace.
+ *   - Concat valid lines NUL-separated.
+ *   - Pad to 4-byte alignment with NULs.
+ *   - Append 4-byte LE "token" footer: (~n << 16) | (n & 0xFFFF), where
+ *     n = padded_len/4. Firmware reads this footer at boot to locate the
+ *     NVRAM table at the top of SOCRAM.
+ *
+ * Minimal port of Linux's brcmf_fw_nvram_strip -- the upstream version also
+ * handles multi-device (devpath/PCIe) selection and MAC-from-platform
+ * overrides; our NVRAM is single-device + has a placeholder MAC, so we
+ * skip both. Returns bytes written to `out`, or negative errno.
+ */
+static int nvram_strip(const uint8_t *in, uint32_t in_len,
+		       uint8_t *out, uint32_t out_capacity)
+{
+	uint32_t op = 0;
+	uint32_t ip = 0;
+	const uint32_t need_tail = 4 + 3;  /* token + worst-case alignment pad */
+
+	while (ip < in_len) {
+		while (ip < in_len &&
+		       (in[ip] == ' ' || in[ip] == '\t' ||
+			in[ip] == '\r' || in[ip] == '\n')) {
+			ip++;
+		}
+		if (ip >= in_len) {
+			break;
+		}
+		if (in[ip] == '#') {
+			while (ip < in_len && in[ip] != '\n') {
+				ip++;
+			}
+			continue;
+		}
+
+		uint32_t line_start = op;
+		while (ip < in_len && in[ip] != '\n' && in[ip] != '\r') {
+			if (op + need_tail >= out_capacity) {
+				LOG_ERR("nvram_strip: out overflow @ in %u out %u",
+					ip, op);
+				return -EOVERFLOW;
+			}
+			out[op++] = in[ip++];
+		}
+		while (op > line_start &&
+		       (out[op - 1] == ' ' || out[op - 1] == '\t')) {
+			op--;
+		}
+		if (op > line_start) {
+			out[op++] = '\0';
+		}
+	}
+
+	uint32_t padded = (op + 3) & ~3u;
+	if (padded + 4 > out_capacity) {
+		return -EOVERFLOW;
+	}
+	while (op < padded) {
+		out[op++] = '\0';
+	}
+
+	uint32_t n = padded / 4;
+	uint32_t token = (~n << 16) | (n & 0xFFFF);
+	out[op++] = (uint8_t)(token & 0xFF);
+	out[op++] = (uint8_t)((token >> 8) & 0xFF);
+	out[op++] = (uint8_t)((token >> 16) & 0xFF);
+	out[op++] = (uint8_t)((token >> 24) & 0xFF);
+
+	return (int)op;
+}
+
+/* Embedded blobs, generated by `xxd -i` from the linux-firmware files
+ * staged at ports/zephyr/firmware/brcm/. See brcmfmac_fw.c, brcmfmac_nvram.c.
+ */
+extern const unsigned char brcmfmac_fw[];
+extern const unsigned int brcmfmac_fw_len;
+extern const unsigned char brcmfmac_nvram[];
+extern const unsigned int brcmfmac_nvram_len;
+
 static int bcm43430_bringup(void)
 {
 	int ret;
@@ -905,6 +1135,74 @@ static int bcm43430_bringup(void)
 		}
 	}
 	LOG_INF("--- Spike B complete ---");
+
+	/* === Firmware + NVRAM upload =======================================
+	 * Bring the chip from "passive" to "ready to boot": write firmware
+	 * to chip-address 0 (SOCRAM start), strip + write NVRAM at top of
+	 * SOCRAM. ARM CM3 stays halted -- releasing it is the boot trigger
+	 * and lives in a separate later step.
+	 */
+	LOG_INF("--- firmware upload: %u bytes @ chip 0x%08x ---",
+		brcmfmac_fw_len, 0u);
+	{
+		int64_t t0 = k_uptime_get();
+		ret = ramrw(true, 0u, (uint8_t *)brcmfmac_fw, brcmfmac_fw_len);
+		if (ret != 0) {
+			LOG_ERR("firmware upload failed: %d", ret);
+			return ret;
+		}
+		int64_t t1 = k_uptime_get();
+		LOG_INF("firmware upload OK in %lld ms (%u bytes)",
+			(long long)(t1 - t0), brcmfmac_fw_len);
+
+#if BCM43430_VERIFY_UPLOAD
+		ret = verify_memory(0u, brcmfmac_fw, brcmfmac_fw_len);
+		int64_t t2 = k_uptime_get();
+		if (ret != 0) {
+			LOG_ERR("firmware verify failed: %d", ret);
+			return ret;
+		}
+		LOG_INF("firmware verify OK in %lld ms",
+			(long long)(t2 - t1));
+#endif
+	}
+
+	{
+		static uint8_t nvram_buf[1024];
+		int stripped = nvram_strip(brcmfmac_nvram, brcmfmac_nvram_len,
+					   nvram_buf, sizeof(nvram_buf));
+		if (stripped < 0) {
+			LOG_ERR("nvram_strip failed: %d", stripped);
+			return stripped;
+		}
+		LOG_INF("nvram strip: %u -> %d bytes (incl. 4-byte token footer)",
+			brcmfmac_nvram_len, stripped);
+		LOG_HEXDUMP_DBG(nvram_buf, (size_t)stripped, "nvram (stripped)");
+
+		const uint32_t ramsize = 0x80000u;  /* SOCRAM = 512 KiB on BCM43430A1 */
+		const uint32_t nvram_addr = ramsize - (uint32_t)stripped;
+
+		int64_t t0 = k_uptime_get();
+		ret = ramrw(true, nvram_addr, nvram_buf, (uint32_t)stripped);
+		if (ret != 0) {
+			LOG_ERR("nvram upload failed: %d", ret);
+			return ret;
+		}
+		int64_t t1 = k_uptime_get();
+		LOG_INF("nvram upload OK @ chip 0x%08x in %lld ms",
+			nvram_addr, (long long)(t1 - t0));
+
+#if BCM43430_VERIFY_UPLOAD
+		ret = verify_memory(nvram_addr, nvram_buf, (uint32_t)stripped);
+		int64_t t2 = k_uptime_get();
+		if (ret != 0) {
+			LOG_ERR("nvram verify failed: %d", ret);
+			return ret;
+		}
+		LOG_INF("nvram verify OK in %lld ms",
+			(long long)(t2 - t1));
+#endif
+	}
 
 	LOG_INF("--- subsystem bring-up complete ---");
 	return 0;

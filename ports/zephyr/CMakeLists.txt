@@ -189,7 +189,11 @@ target_sources(app PRIVATE
 )
 
 if(CONFIG_BCM43430_BRINGUP)
-    target_sources(app PRIVATE src/bcm43430_bringup.c)
+    target_sources(app PRIVATE
+        src/bcm43430_bringup.c
+        firmware/brcm/brcmfmac_fw.c
+        firmware/brcm/brcmfmac_nvram.c
+    )
 endif()
 
 target_link_libraries(app PRIVATE ${MICROPY_TARGET})
