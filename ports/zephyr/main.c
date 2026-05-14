@@ -205,6 +205,9 @@ soft_reset_exit:
     #if MICROPY_PY_MACHINE_I2C_TARGET
     mp_machine_i2c_target_deinit_all();
     #endif
+    #if MICROPY_PY_MACHINE_I2S
+    machine_i2s_deinit_all();
+    #endif
 
     #if MICROPY_PY_THREAD
     mp_thread_deinit();

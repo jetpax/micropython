@@ -84,6 +84,15 @@
 #endif
 #define MICROPY_PY_MACHINE_PWM      (1)
 #define MICROPY_PY_MACHINE_PWM_INCLUDEFILE "ports/zephyr/machine_pwm.c"
+#ifdef CONFIG_I2S
+#define MICROPY_PY_MACHINE_I2S      (1)
+#define MICROPY_PY_MACHINE_I2S_INCLUDEFILE "ports/zephyr/machine_i2s.c"
+#define MICROPY_PY_MACHINE_I2S_RING_BUF (1)
+// I2S.RX / I2S.TX -- kept equal to Zephyr's enum i2s_dir (RX=0, TX=1) so
+// the shim uses the value directly as an i2s_dir (asserted in machine_i2s.c).
+#define MICROPY_PY_MACHINE_I2S_CONSTANT_RX (0)
+#define MICROPY_PY_MACHINE_I2S_CONSTANT_TX (1)
+#endif
 #if defined(CONFIG_NETWORKING) || defined(CONFIG_FILE_SYSTEM)
 #define MICROPY_PY_ERRNO            (1)
 #endif

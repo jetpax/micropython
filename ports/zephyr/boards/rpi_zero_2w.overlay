@@ -1,0 +1,21 @@
+/*
+ * Pi Zero 2 W devicetree overlay for MicroPython on Zephyr.
+ *
+ * Enables the BCM2835 PCM/I2S controller and the BCM2835 DMA controller
+ * it streams sample buffers through -- both are status = "disabled" in
+ * the SoC dtsi (a board or application opts in). The i2s node also gets
+ * its pinctrl group here: pin muxing is board wiring (GPIO 18..21 ALT0
+ * on the 40-pin header), supplied at the board layer, not the SoC dtsi.
+ *
+ * machine.I2S is exposed only when CONFIG_I2S=y (rpi_zero_2w.conf).
+ */
+
+&dma {
+	status = "okay";
+};
+
+&i2s {
+	status = "okay";
+	pinctrl-0 = <&i2s_gpio18>;
+	pinctrl-names = "default";
+};

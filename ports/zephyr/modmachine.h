@@ -11,5 +11,6 @@ typedef struct _machine_pin_obj_t {
 } machine_pin_obj_t;
 
 void machine_pin_deinit(void);
+void machine_i2s_deinit_all(void);
 
 #endif // MICROPY_INCLUDED_ZEPHYR_MODMACHINE_H
