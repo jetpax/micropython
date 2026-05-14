@@ -44,6 +44,12 @@
 #if defined(CONFIG_NET_DHCPV4)
 #include <zephyr/net/dhcpv4.h>
 #endif
+#if defined(CONFIG_NET_HOSTNAME_ENABLE)
+#include <zephyr/net/hostname.h>
+#endif
+#if defined(CONFIG_DNS_RESOLVER)
+#include <zephyr/net/dns_resolve.h>
+#endif
 
 #include "extmod/modnetwork.h"
 
@@ -85,6 +91,44 @@ static struct net_if *require_iface(network_wlan_obj_t *self) {
         mp_raise_OSError(MP_ENODEV);
     }
     return iface;
+}
+
+/* Push MP's cross-port hostname buffer into Zephyr so DHCP DISCOVER /
+ * REQUEST advertises it as Option 12. Called from SYS_INIT (boot
+ * default), wlan.connect() (latest user-set value picked up just
+ * before joining), and wlan.config(hostname=...).
+ */
+static void apply_hostname_to_zephyr(void) {
+#if defined(CONFIG_NET_HOSTNAME_DYNAMIC)
+    size_t len = strlen(mod_network_hostname_data);
+    if (len > 0) {
+        (void)net_hostname_set(mod_network_hostname_data, len);
+    }
+#endif
+}
+
+/* Walk Zephyr's default DNS resolver context for the first IPv4 server. */
+static bool first_ipv4_dns(struct net_in_addr *out) {
+#if defined(CONFIG_DNS_RESOLVER)
+    struct dns_resolve_context *ctx = dns_resolve_get_default();
+    if (ctx == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(ctx->servers); i++) {
+        const struct net_sockaddr *sa = &ctx->servers[i].dns_server;
+        if (sa->sa_family == AF_INET) {
+            const struct net_sockaddr_in *sin =
+                (const struct net_sockaddr_in *)(const void *)sa;
+            if (sin->sin_addr.s_addr != 0) {
+                *out = sin->sin_addr;
+                return true;
+            }
+        }
+    }
+#else
+    (void)out;
+#endif
+    return false;
 }
 
 /* === scan: net_mgmt event callback collects results into a list ============ */
@@ -232,6 +276,12 @@ static mp_obj_t network_wlan_connect(size_t n_args, const mp_obj_t *pos_args, mp
         }
     }
 
+    /* Sync the latest hostname into Zephyr right before joining, so the
+     * DHCP DISCOVER that fires post-link reflects any change the user
+     * made via network.hostname(...) since boot.
+     */
+    apply_hostname_to_zephyr();
+
     int ret = net_mgmt(NET_REQUEST_WIFI_CONNECT, iface, &params, sizeof(params));
     if (ret < 0) {
         mp_raise_OSError(-ret);
@@ -334,9 +384,7 @@ static mp_obj_t network_wlan_ifconfig(size_t n_args, const mp_obj_t *args) {
             nm = net_if_ipv4_get_netmask_by_addr(iface, p);
         }
         gw = net_if_ipv4_get_gw(iface);
-        /* DNS — Zephyr's resolver is a global, not per-iface. For v1 leave 0.0.0.0;
-         * apps that need it can call socket.getaddrinfo with the resolver directly.
-         */
+        first_ipv4_dns(&dns);
         mp_obj_t tuple[4] = {
             addr4_to_str(&ip),
             addr4_to_str(&nm),
@@ -424,6 +472,7 @@ static mp_obj_t network_wlan_config(size_t n_args, const mp_obj_t *args, mp_map_
             if (key == MP_QSTR_hostname) {
                 mp_obj_t fa[1] = { kwargs->table[i].value };
                 mod_network_hostname(1, fa);
+                apply_hostname_to_zephyr();
                 continue;
             }
             mp_raise_ValueError(MP_ERROR_TEXT("unsupported config key"));
@@ -503,6 +552,10 @@ MP_DEFINE_CONST_OBJ_TYPE(
 
 static int network_wlan_module_init(void) {
     k_sem_init(&wlan_scan_sem, 0, 1);
+    /* Push the boot-time hostname default into Zephyr so the very first
+     * DHCP DISCOVER (driver-triggered on WLC_E_LINK) carries it.
+     */
+    apply_hostname_to_zephyr();
     return 0;
 }
 SYS_INIT(network_wlan_module_init, APPLICATION, 90);
