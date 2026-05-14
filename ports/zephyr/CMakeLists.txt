@@ -37,6 +37,12 @@ include(${MICROPY_DIR}/extmod/extmod.cmake)
 # pyDirect: enable USER_C_MODULES (parity with esp32/rp2/etc. ports).
 include(${MICROPY_DIR}/py/usermod.cmake)
 
+# extmod.cmake unconditionally adds modsocket.c, which wants the NIC-protocol
+# framework (mod_network_socket_obj_t) when MICROPY_PY_NETWORK is on without
+# MICROPY_PY_LWIP. The zephyr port owns its socket layer (zsock-backed
+# modsocket.c in MICROPY_SOURCE_PORT), so excise the extmod variant.
+list(REMOVE_ITEM MICROPY_SOURCE_EXTMOD ${MICROPY_EXTMOD_DIR}/modsocket.c)
+
 list(APPEND DTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/dts)
 
 # Define mpy-cross flags, for use with frozen code.
@@ -75,6 +81,7 @@ set(MICROPY_SOURCE_PORT
     modzephyr.c
     modzsensor.c
     mphalport.c
+    src/modnetwork_wlan.c
     uart_core.c
     zephyr_device.c
     zephyr_storage.c

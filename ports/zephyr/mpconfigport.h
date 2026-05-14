@@ -90,6 +90,14 @@
 #ifdef CONFIG_NETWORKING
 #define MICROPY_PY_SOCKET           (1)
 #endif
+#if defined(CONFIG_NET_L2_WIFI_MGMT)
+#define MICROPY_PY_NETWORK                  (1)
+#define MICROPY_PY_NETWORK_HOSTNAME_DEFAULT "mpy-zephyr"
+#define MICROPY_PY_NETWORK_INCLUDEFILE \
+    "ports/zephyr/src/modnetwork_wlan_includes.h"
+#define MICROPY_PY_NETWORK_MODULE_GLOBALS_INCLUDEFILE \
+    "ports/zephyr/src/modnetwork_wlan_globals.h"
+#endif
 /* pyDirect: enable os.dupterm() so webrepl can register itself.
  * Slot count = 1. NOTIFY disabled because the zephyr port has no
  * stdin_ringbuf (NOTIFY is for ports that funnel stdin through one). */
