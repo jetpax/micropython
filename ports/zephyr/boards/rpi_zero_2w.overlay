@@ -24,9 +24,23 @@
 	status = "okay";
 };
 
+/*
+ * I2S: TX-only (PCM_CLK, PCM_FS, PCM_DOUT). PCM_DIN on GPIO 20 is
+ * deliberately NOT muxed here, because pre-2020-01-23 Pirate Audio
+ * boards wire button Y to GPIO 20 (current boards moved Y to GPIO 24).
+ * The stock i2s_gpio18 group includes PCM_DIN; using it would claim
+ * GPIO 20 at I2S init and prevent button Y on older HATs.
+ *
+ * Cost: no I2S RX/capture from this image -- acceptable since the
+ * Pirate Audio HAT lineup is all output-only (PCM5100 DAC). Restore
+ * the stock i2s_gpio18 group if microphone capture is needed.
+ * The bcm283x-pinctrl.dtsi comment anticipates this case directly:
+ * "A TX-only board (no capture) can define a 3-pin group omitting
+ * PCM_DIN in its overlay."
+ */
 &i2s {
 	status = "okay";
-	pinctrl-0 = <&i2s_gpio18>;
+	pinctrl-0 = <&i2s_gpio18_tx_only>;
 	pinctrl-names = "default";
 };
 
@@ -51,6 +65,12 @@
 };
 
 &pinctrl {
+	i2s_gpio18_tx_only: i2s-gpio18-tx-only {
+		group1 {
+			pinmux = <PCM_CLK_GPIO18>, <PCM_FS_GPIO19>, <PCM_DOUT_GPIO21>;
+		};
+	};
+
 	spi0_mosi_sclk: spi0-mosi-sclk {
 		group1 {
 			pinmux = <SPI0_MOSI_GPIO10>, <SPI0_SCLK_GPIO11>;
