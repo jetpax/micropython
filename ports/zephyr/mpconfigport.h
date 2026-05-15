@@ -36,6 +36,17 @@
 #define MICROPY_CONFIG_ROM_LEVEL (MICROPY_CONFIG_ROM_LEVEL_BASIC_FEATURES)
 #endif
 
+// Run module `__init__` on import. BASIC_FEATURES leaves this off, but
+// lv_binding_micropython emits `lvgl_mod___init__` that calls lv_init(),
+// and the LVGL display bridge (pyDirect/lvgl/lvgl_zephyr_display.c) hooks
+// the resulting lv_init via -Wl,--wrap=lv_init to register the Zephyr
+// display. Without auto-init the user has to remember to call lv.init()
+// before any lvgl operation -- a footgun (version_*() and other macro-
+// based getters work fine, but anything that needs a registered display
+// NULL-derefs). One-line enable; the ESP/rp2 ports get this by running
+// at EXTRA_FEATURES ROM level.
+#define MICROPY_MODULE_BUILTIN_INIT  (1)
+
 // Usually passed from Makefile
 #ifndef MICROPY_HEAP_SIZE
 #define MICROPY_HEAP_SIZE (16 * 1024)

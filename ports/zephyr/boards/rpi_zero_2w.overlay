@@ -1,14 +1,24 @@
 /*
  * Pi Zero 2 W devicetree overlay for MicroPython on Zephyr.
  *
- * Enables the BCM2835 PCM/I2S controller and the BCM2835 DMA controller
- * it streams sample buffers through -- both are status = "disabled" in
- * the SoC dtsi (a board or application opts in). The i2s node also gets
- * its pinctrl group here: pin muxing is board wiring (GPIO 18..21 ALT0
- * on the 40-pin header), supplied at the board layer, not the SoC dtsi.
+ * HAT-layer configuration: things tied to the Pirate Audio HAT rather
+ * than the SoC. The board DTS is SoC-only by principle (layered
+ * board-config model); HAT pinning, panel definitions, and per-HAT
+ * pinctrl groups live here.
  *
- * machine.I2S is exposed only when CONFIG_I2S=y (rpi_zero_2w.conf).
+ *   - I2S: BCM2835 PCM/I2S on GPIO 18..21 (ALT0). Driven by
+ *     drivers/i2s/i2s_bcm2835.c; needs the BCM2835 DMA controller
+ *     (also enabled here). machine.I2S is wired up when CONFIG_I2S=y.
+ *
+ *   - Display: ST7789 240x240 in MIPI-DBI Mode C (4-wire SPI) on SPI0
+ *     with GPIO 9 as D/C and GPIO 7 as CS. Write-only -- the HAT
+ *     doesn't wire MISO. Backlight on GPIO 13, held high. Tuning
+ *     parameters lifted from the in-tree st7789v_waveshare_240x240
+ *     shield overlay (closest analog: same panel size, same controller).
  */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/display/panel.h>
 
 &dma {
 	status = "okay";
@@ -18,4 +28,81 @@
 	status = "okay";
 	pinctrl-0 = <&i2s_gpio18>;
 	pinctrl-names = "default";
+};
+
+/*
+ * Display wiring on SPI0:
+ *   CS  -> GPIO 7  (SPI0_CE1, controller-managed)
+ *   D/C -> GPIO 9  (held as a plain GPIO -- the stock spi0_gpio7
+ *                   pinctrl group muxes this to MISO/ALT0, which we
+ *                   don't want; the MOSI+SCLK-only group below leaves
+ *                   GPIO 9 free)
+ *   MOSI / SCLK -> GPIO 10 / 11 (ALT0)
+ *   Backlight   -> GPIO 13 (regulator-fixed, held high; no PWM in Phase A)
+ *
+ * The bcm283x-pinctrl.dtsi comment for spi0_gpio7 explicitly anticipates
+ * this case: "Write-only displays that need GPIO 9 for a D/C line
+ * should define a MOSI+SCLK-only group in the board overlay."
+ */
+&spi0 {
+	pinctrl-0 = <&spi0_mosi_sclk>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
+};
+
+&pinctrl {
+	spi0_mosi_sclk: spi0-mosi-sclk {
+		group1 {
+			pinmux = <SPI0_MOSI_GPIO10>, <SPI0_SCLK_GPIO11>;
+		};
+	};
+};
+
+/ {
+	chosen {
+		zephyr,display = &st7789v;
+	};
+
+	mipi_dbi: mipi-dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi0>;
+		dc-gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		st7789v: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			reg = <0>;
+			mipi-max-frequency = <20000000>;   /* conservative; bump after green */
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+			pixel-format = <PANEL_PIXEL_FORMAT_RGB_565>;
+			width = <240>;
+			height = <240>;
+			x-offset = <0>;
+			y-offset = <0>;    /* Pimoroni Pirate Audio: panel rows 0..239 of the 240x320 RAM */
+			/* Tuning -- mirrored from st7789v_waveshare_240x240.overlay */
+			vcom = <0x19>;
+			gctrl = <0x35>;
+			vrhs = <0x12>;
+			vdvs = <0x20>;
+			mdac = <0x00>;
+			gamma = <0x01>;
+			lcm = <0x2c>;
+			porch-param   = [ 0c 0c 00 33 33 ];
+			cmd2en-param  = [ 5a 69 02 01 ];
+			pwctrl1-param = [ a4 a1 ];
+			pvgam-param   = [ d0 04 0d 11 13 2b 3f 54 4c 18 0d 0b 1f 23 ];
+			nvgam-param   = [ d0 04 0c 11 13 2c 3f 44 51 2f 1f 1f 20 23 ];
+			ram-param     = [ 00 f0 ];
+			rgb-param     = [ cd 08 14 ];
+		};
+	};
+
+	lcd_backlight: lcd_backlight {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-backlight";
+		enable-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
 };
