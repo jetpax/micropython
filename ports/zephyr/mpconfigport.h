@@ -47,6 +47,12 @@
 // at EXTRA_FEATURES ROM level.
 #define MICROPY_MODULE_BUILTIN_INIT  (1)
 
+// f-strings. BASIC_FEATURES leaves this off; ESP/rp2 ports get it via
+// EXTRA_FEATURES. Cheap to opt in, big REPL ergonomics win -- without it
+// every `f"...{x}..."` in a paste-mode snippet raises SyntaxError, which
+// is a footgun for anyone writing cross-port code.
+#define MICROPY_PY_FSTRINGS  (1)
+
 // Usually passed from Makefile
 #ifndef MICROPY_HEAP_SIZE
 #define MICROPY_HEAP_SIZE (16 * 1024)
