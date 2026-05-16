@@ -394,11 +394,32 @@ static MP_DEFINE_CONST_OBJ_TYPE(
 // getaddrinfo() implementation
 //
 
+/* Stash limit per DNS query. Real-world A/AAAA responses rarely exceed
+ * 2-3 records, and getaddrinfo callers typically use the first usable
+ * one anyway. Overflow past the limit is silently dropped (caller
+ * still gets the first GETADDRINFO_MAX_RESULTS). 4 keeps the state
+ * struct under ~150 bytes.
+ */
+#define GETADDRINFO_MAX_RESULTS 4
+
 typedef struct _getaddrinfo_state_t {
     mp_obj_t result;
     struct k_sem sem;
     mp_obj_t port;
     int status;
+    /* Raw sockaddrs stashed by dns_resolve_cb. The callback runs in a
+     * non-MP Zephyr thread (typically net_socket_service); that thread
+     * has no per-thread MicroPython state set up via
+     * mp_thread_set_state, so any call into the GC (mp_obj_new_*,
+     * mp_obj_list_append, etc.) NULL-derefs through mp_thread_get_state
+     * inside gc_alloc. mod_getaddrinfo() builds the MP tuples from
+     * this array AFTER k_sem_take returns, on the MP thread.
+     */
+    uint8_t n_results;
+    struct {
+        uint8_t family;
+        struct sockaddr_in6 addr;   /* large enough for both v4 and v6 */
+    } results[GETADDRINFO_MAX_RESULTS];
 } getaddrinfo_state_t;
 
 void dns_resolve_cb(enum dns_resolve_status status, struct dns_addrinfo *info, void *user_data) {
@@ -414,15 +435,18 @@ void dns_resolve_cb(enum dns_resolve_status status, struct dns_addrinfo *info, v
         return;
     }
 
-    mp_obj_tuple_t *tuple = mp_obj_new_tuple(5, NULL);
-    tuple->items[0] = MP_OBJ_NEW_SMALL_INT(info->ai_family);
-    // info->ai_socktype not filled
-    tuple->items[1] = MP_OBJ_NEW_SMALL_INT(SOCK_STREAM);
-    // info->ai_protocol not filled
-    tuple->items[2] = MP_OBJ_NEW_SMALL_INT(IPPROTO_TCP);
-    tuple->items[3] = MP_OBJ_NEW_QSTR(MP_QSTR_);
-    tuple->items[4] = format_inet_addr(&info->ai_addr, state->port);
-    mp_obj_list_append(state->result, MP_OBJ_FROM_PTR(tuple));
+    /* Stash the raw sockaddr -- NO MP calls here, see comment in
+     * getaddrinfo_state_t. Overflow past MAX is silently dropped; the
+     * caller still gets the first MAX results.
+     */
+    if (state->n_results < GETADDRINFO_MAX_RESULTS) {
+        size_t copy_len = (info->ai_family == AF_INET6)
+                              ? sizeof(struct sockaddr_in6)
+                              : sizeof(struct sockaddr_in);
+        state->results[state->n_results].family = info->ai_family;
+        memcpy(&state->results[state->n_results].addr, &info->ai_addr, copy_len);
+        state->n_results++;
+    }
 }
 
 static mp_obj_t mod_getaddrinfo(size_t n_args, const mp_obj_t *args) {
@@ -438,12 +462,31 @@ static mp_obj_t mod_getaddrinfo(size_t n_args, const mp_obj_t *args) {
     (void)mp_obj_get_int(port_in);
     state.port = port_in;
     state.result = mp_obj_new_list(0, NULL);
+    state.n_results = 0;
     k_sem_init(&state.sem, 0, UINT_MAX);
 
     for (int i = 2; i--;) {
         int type = (family != AF_INET6 ? DNS_QUERY_TYPE_A : DNS_QUERY_TYPE_AAAA);
         RAISE_ERRNO(dns_get_addr_info(host, type, NULL, dns_resolve_cb, &state, 3000));
         k_sem_take(&state.sem, K_FOREVER);
+
+        /* Build MP tuples on the MP thread from results stashed by the
+         * non-MP callback. Reset n_results between iterations so the
+         * second (AAAA) pass doesn't re-emit the first (A) pass.
+         */
+        for (uint8_t r = 0; r < state.n_results; r++) {
+            mp_obj_tuple_t *tuple = mp_obj_new_tuple(5, NULL);
+            tuple->items[0] = MP_OBJ_NEW_SMALL_INT(state.results[r].family);
+            // info->ai_socktype not filled
+            tuple->items[1] = MP_OBJ_NEW_SMALL_INT(SOCK_STREAM);
+            // info->ai_protocol not filled
+            tuple->items[2] = MP_OBJ_NEW_SMALL_INT(IPPROTO_TCP);
+            tuple->items[3] = MP_OBJ_NEW_QSTR(MP_QSTR_);
+            tuple->items[4] = format_inet_addr((struct sockaddr *)&state.results[r].addr, state.port);
+            mp_obj_list_append(state.result, MP_OBJ_FROM_PTR(tuple));
+        }
+        state.n_results = 0;
+
         if (family != 0) {
             break;
         }
