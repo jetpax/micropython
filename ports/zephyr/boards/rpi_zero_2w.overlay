@@ -83,6 +83,31 @@
 		zephyr,display = &st7789v;
 	};
 
+	/*
+	 * 16 MiB RAM disk for the development iteration loop. The Pi Zero 2 W
+	 * has no SoC-attached flash and our Zephyr tree does not yet have an
+	 * SD-card controller driver (sdhc_bcm2835.c covers the Arasan SDHCI
+	 * port, which on this board is wired to the CYW43439 wireless chip,
+	 * not the microSD slot). Until sdhc_bcm2835_sdhost.c lands, the only
+	 * route to a working filesystem is a RAM-backed disk_access disk
+	 * formatted with LittleFS. Survives soft-reset (DRAM is untouched);
+	 * lost on power-cycle. Sideload via the WBP WebREPL upload path.
+	 *
+	 * Sizing: 16 MiB. Each sector is 512 B, so 32768 sectors. Big enough
+	 * for the device-scripts tree plus all current bundle assets (the
+	 * largest single asset is the 1 MiB winamp screensaver frames.bin)
+	 * with comfortable headroom for future growth. Cost is paid out of
+	 * the BSS region of the image; the 64 MiB MicroPython heap
+	 * (CONFIG_MICROPY_HEAP_SIZE in this board's .conf) is unaffected.
+	 * See notes/zephyr_storage.html for the full reasoning trail.
+	 */
+	ramdisk0: ramdisk0 {
+		compatible = "zephyr,ram-disk";
+		disk-name = "RAM";
+		sector-size = <512>;
+		sector-count = <32768>;
+	};
+
 	mipi_dbi: mipi-dbi {
 		compatible = "zephyr,mipi-dbi-spi";
 		spi-dev = <&spi0>;
