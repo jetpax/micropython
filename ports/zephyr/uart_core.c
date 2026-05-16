@@ -27,6 +27,7 @@
 #include "py/mpconfig.h"
 #include "py/runtime.h"
 #include "py/stream.h"
+#include "extmod/misc.h"
 #include "src/zephyr_getchar.h"
 // Zephyr headers
 #include <zephyr/kernel.h>
@@ -90,9 +91,11 @@ int mp_hal_stdin_rx_chr(void) {
 // Send string of given length
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
     mp_uint_t ret = len;
+    const char *p = str;
+    mp_uint_t n = len;
     #ifdef CONFIG_CONSOLE_SUBSYS
-    while (len--) {
-        char c = *str++;
+    while (n--) {
+        char c = *p++;
         while (mp_console_putchar(c) == -1) {
             MICROPY_EVENT_POLL_HOOK
         }
@@ -101,10 +104,13 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
     static const struct device *uart_console_dev =
         DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
-    while (len--) {
-        uart_poll_out(uart_console_dev, *str++);
+    while (n--) {
+        uart_poll_out(uart_console_dev, *p++);
     }
     #endif
+    // Mirror to any os.dupterm() slots (used by webrepl_binary's capture
+    // stream to collect print()/traceback output for WBP RES messages).
+    mp_os_dupterm_tx_strn(str, len);
     return ret;
 }
 
