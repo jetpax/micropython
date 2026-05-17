@@ -334,7 +334,6 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(socket_makefile_obj, 1, 3, socket_mak
 
 static mp_uint_t sock_ioctl(mp_obj_t o_in, mp_uint_t request, uintptr_t arg, int *errcode) {
     socket_obj_t *socket = o_in;
-    (void)arg;
     switch (request) {
         case MP_STREAM_CLOSE:
             if (socket->ctx != -1) {
@@ -347,6 +346,45 @@ static mp_uint_t sock_ioctl(mp_obj_t o_in, mp_uint_t request, uintptr_t arg, int
                 socket->ctx = -1;
             }
             return 0;
+
+        case MP_STREAM_POLL: {
+            /* select.poll / select.select / asyncio all funnel through here.
+             * Map MP_STREAM_POLL_{RD,WR,ERR,HUP,NVAL} <-> ZSOCK_POLL{IN,OUT,
+             * ERR,HUP,NVAL} via a non-blocking zsock_poll on this socket's
+             * fd. Without this case, modselect.c's poll_set_poll_once tries
+             * the default branch above and gets EINVAL — which masquerades
+             * as "select.poll() doesn't work" on sockets. */
+            mp_uint_t flags = arg;
+            struct zsock_pollfd pfd = { .fd = socket->ctx, .events = 0 };
+            if (flags & MP_STREAM_POLL_RD) {
+                pfd.events |= ZSOCK_POLLIN;
+            }
+            if (flags & MP_STREAM_POLL_WR) {
+                pfd.events |= ZSOCK_POLLOUT;
+            }
+            int ret = zsock_poll(&pfd, 1, 0);
+            if (ret < 0) {
+                *errcode = errno;
+                return MP_STREAM_ERROR;
+            }
+            mp_uint_t result = 0;
+            if (pfd.revents & ZSOCK_POLLIN) {
+                result |= MP_STREAM_POLL_RD;
+            }
+            if (pfd.revents & ZSOCK_POLLOUT) {
+                result |= MP_STREAM_POLL_WR;
+            }
+            if (pfd.revents & ZSOCK_POLLERR) {
+                result |= MP_STREAM_POLL_ERR;
+            }
+            if (pfd.revents & ZSOCK_POLLHUP) {
+                result |= MP_STREAM_POLL_HUP;
+            }
+            if (pfd.revents & ZSOCK_POLLNVAL) {
+                result |= MP_STREAM_POLL_NVAL;
+            }
+            return result;
+        }
 
         default:
             *errcode = MP_EINVAL;
@@ -362,6 +400,9 @@ static const mp_rom_map_elem_t socket_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_listen), MP_ROM_PTR(&socket_listen_obj) },
     { MP_ROM_QSTR(MP_QSTR_accept), MP_ROM_PTR(&socket_accept_obj) },
     { MP_ROM_QSTR(MP_QSTR_send), MP_ROM_PTR(&socket_send_obj) },
+    /* sendall = mp_stream_write semantics (writes all bytes or raises);
+     * matches CPython's socket.sendall and unblocks lib/iperf3.py et al. */
+    { MP_ROM_QSTR(MP_QSTR_sendall), MP_ROM_PTR(&mp_stream_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_recv), MP_ROM_PTR(&socket_recv_obj) },
     { MP_ROM_QSTR(MP_QSTR_recvfrom), MP_ROM_PTR(&socket_recvfrom_obj) },
     { MP_ROM_QSTR(MP_QSTR_setsockopt), MP_ROM_PTR(&socket_setsockopt_obj) },
@@ -467,7 +508,19 @@ static mp_obj_t mod_getaddrinfo(size_t n_args, const mp_obj_t *args) {
 
     for (int i = 2; i--;) {
         int type = (family != AF_INET6 ? DNS_QUERY_TYPE_A : DNS_QUERY_TYPE_AAAA);
-        RAISE_ERRNO(dns_get_addr_info(host, type, NULL, dns_resolve_cb, &state, 3000));
+        int rc = dns_get_addr_info(host, type, NULL, dns_resolve_cb, &state, 3000);
+        if (rc != 0) {
+            /* AF_UNSPEC second pass for AAAA: if IPv6 isn't enabled in
+             * this build, dns_get_addr_info returns -EPFNOSUPPORT / -EAFNOSUPPORT.
+             * The first-pass A query may have already filled state.result, so
+             * swallowing the v6 error is the right thing (matches CPython's
+             * behaviour where an unsupported family silently drops out of the
+             * AF_UNSPEC result set). Re-raise only on the first pass. */
+            if (family == AF_INET6) {
+                break;
+            }
+            RAISE_ERRNO(rc);
+        }
         k_sem_take(&state.sem, K_FOREVER);
 
         /* Build MP tuples on the MP thread from results stashed by the

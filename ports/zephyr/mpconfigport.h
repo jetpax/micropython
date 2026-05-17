@@ -31,27 +31,16 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/spi.h>
 
-// Use the basic configuration level to get a balance between size and features.
+// Run at EXTRA_FEATURES so this port has parity with the ESP / rp2 ports
+// for cross-port Python code: f-strings, json, OrderedDict, MODULE_BUILTIN_INIT
+// (needed by lv_binding_micropython's lvgl_mod___init__ -> lv_init() ->
+// pyDirect/lvgl/lvgl_zephyr_display.c's --wrap=lv_init hook), and the rest
+// of the EXTRA-level standard library bits. RAM cost is negligible on the
+// 256 MB rpi_zero_2w; smaller boards in this port that need to go back to
+// BASIC can override at the board mpconfigport.h level.
 #ifndef MICROPY_CONFIG_ROM_LEVEL
-#define MICROPY_CONFIG_ROM_LEVEL (MICROPY_CONFIG_ROM_LEVEL_BASIC_FEATURES)
+#define MICROPY_CONFIG_ROM_LEVEL (MICROPY_CONFIG_ROM_LEVEL_EXTRA_FEATURES)
 #endif
-
-// Run module `__init__` on import. BASIC_FEATURES leaves this off, but
-// lv_binding_micropython emits `lvgl_mod___init__` that calls lv_init(),
-// and the LVGL display bridge (pyDirect/lvgl/lvgl_zephyr_display.c) hooks
-// the resulting lv_init via -Wl,--wrap=lv_init to register the Zephyr
-// display. Without auto-init the user has to remember to call lv.init()
-// before any lvgl operation -- a footgun (version_*() and other macro-
-// based getters work fine, but anything that needs a registered display
-// NULL-derefs). One-line enable; the ESP/rp2 ports get this by running
-// at EXTRA_FEATURES ROM level.
-#define MICROPY_MODULE_BUILTIN_INIT  (1)
-
-// f-strings. BASIC_FEATURES leaves this off; ESP/rp2 ports get it via
-// EXTRA_FEATURES. Cheap to opt in, big REPL ergonomics win -- without it
-// every `f"...{x}..."` in a paste-mode snippet raises SyntaxError, which
-// is a footgun for anyone writing cross-port code.
-#define MICROPY_PY_FSTRINGS  (1)
 
 // Usually passed from Makefile
 #ifndef MICROPY_HEAP_SIZE
