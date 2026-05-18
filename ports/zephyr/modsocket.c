@@ -290,6 +290,23 @@ static mp_obj_t socket_recv(mp_obj_t self_in, mp_obj_t len_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(socket_recv_obj, socket_recv);
 
+static mp_obj_t socket_sendto(mp_obj_t self_in, mp_obj_t data_in, mp_obj_t addr_in) {
+    socket_obj_t *socket = self_in;
+    socket_check_closed(socket);
+
+    mp_buffer_info_t buf;
+    mp_get_buffer_raise(data_in, &buf, MP_BUFFER_READ);
+
+    struct sockaddr sockaddr;
+    parse_inet_addr(socket, addr_in, &sockaddr);
+
+    ssize_t sent = zsock_sendto(socket->ctx, buf.buf, buf.len, 0,
+                                &sockaddr, sizeof(sockaddr));
+    RAISE_SOCK_ERRNO(sent);
+    return mp_obj_new_int_from_uint(sent);
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(socket_sendto_obj, socket_sendto);
+
 static mp_obj_t socket_recvfrom(mp_obj_t self_in, mp_obj_t len_in) {
     socket_obj_t *socket = self_in;
     socket_check_closed(socket);
@@ -403,6 +420,7 @@ static const mp_rom_map_elem_t socket_locals_dict_table[] = {
     /* sendall = mp_stream_write semantics (writes all bytes or raises);
      * matches CPython's socket.sendall and unblocks lib/iperf3.py et al. */
     { MP_ROM_QSTR(MP_QSTR_sendall), MP_ROM_PTR(&mp_stream_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_sendto), MP_ROM_PTR(&socket_sendto_obj) },
     { MP_ROM_QSTR(MP_QSTR_recv), MP_ROM_PTR(&socket_recv_obj) },
     { MP_ROM_QSTR(MP_QSTR_recvfrom), MP_ROM_PTR(&socket_recvfrom_obj) },
     { MP_ROM_QSTR(MP_QSTR_setsockopt), MP_ROM_PTR(&socket_setsockopt_obj) },
