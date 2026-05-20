@@ -78,9 +78,39 @@
 	};
 };
 
+/*
+ * USB CDC ACM as the MP REPL channel. The Zephyr DWC2 controller is
+ * disabled in the board SoC DTS (status="disabled" in bcm2710.dtsi);
+ * this overlay flips it on, declares a single CDC ACM UART child,
+ * and retargets the MP REPL via the chosen `zephyr,uart-mp-repl`.
+ * The kernel `zephyr,console` chosen is left alone so PL011 keeps
+ * boot logs + panics.
+ *
+ * &mailbox + &firmware come up too so the DWC2 vendor pre_enable hook
+ * can SET_POWER_STATE(USB_HCD, on) at boot, and the new
+ * hwinfo_bcm2835 driver can read GET_BOARD_SERIAL for iSerialNumber.
+ */
+&mailbox {
+	status = "okay";
+};
+
+&firmware {
+	status = "okay";
+};
+
+&usb {
+	status = "okay";
+
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "MP REPL";
+	};
+};
+
 / {
 	chosen {
 		zephyr,display = &st7789v;
+		zephyr,uart-mp-repl = &cdc_acm_uart0;
 	};
 
 	/*
