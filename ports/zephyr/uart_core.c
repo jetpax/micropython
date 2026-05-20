@@ -36,6 +36,18 @@
 #include <zephyr/console/tty.h>
 #include <zephyr/drivers/uart.h>
 
+// Allow boards to retarget the MP REPL to a different UART than the
+// Zephyr kernel console via the chosen `zephyr,uart-mp-repl`. Useful
+// when boot logs / panics should stay on a dedicated line (e.g. PL011
+// on rpi_zero_2w) while the user-facing REPL moves to a more
+// convenient channel (e.g. USB CDC ACM). Falls back to `zephyr,console`
+// when the new chosen isn't set, so existing boards are unaffected.
+#if DT_NODE_EXISTS(DT_CHOSEN(zephyr_uart_mp_repl))
+#define MP_REPL_UART_NODE DT_CHOSEN(zephyr_uart_mp_repl)
+#else
+#define MP_REPL_UART_NODE DT_CHOSEN(zephyr_console)
+#endif
+
 
 #ifdef CONFIG_CONSOLE_SUBSYS
 
@@ -102,7 +114,7 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
     }
     #else
     static const struct device *uart_console_dev =
-        DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+        DEVICE_DT_GET(MP_REPL_UART_NODE);
 
     while (n--) {
         uart_poll_out(uart_console_dev, *p++);
@@ -122,7 +134,7 @@ int mp_console_init(void) {
     const struct device *uart_dev;
     int ret;
 
-    uart_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+    uart_dev = DEVICE_DT_GET(MP_REPL_UART_NODE);
     if (!device_is_ready(uart_dev)) {
         return -ENODEV;
     }
