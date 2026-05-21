@@ -44,8 +44,6 @@
 #include "py/mperrno.h"
 #include "py/builtin.h"
 #include "py/compile.h"
-#include "py/lexer.h"
-#include "py/parse.h"
 #include "py/runtime.h"
 #include "py/repl.h"
 #include "py/gc.h"
@@ -163,35 +161,6 @@ soft_reset:
     #if MICROPY_VFS && MICROPY_MODULE_FROZEN_MPY
     // Mount and/or create the filesystem
     pyexec_frozen_module("_boot.py", false);
-    #endif
-
-    #if MICROPY_VFS && defined(CONFIG_DISK_DRIVER_SDMMC)
-    // Mount the SD card at / so pyexec_file_if_exists("boot.py") below
-    // picks up boot.py from the FS root, and S-S device-scripts paths
-    // (/lib/sys/..., /settings/...) resolve as absolute lookups without
-    // any platform-conditional rewriting. Without a VFS mounted at this
-    // point the file lookup falls into the empty default VFS and silently
-    // misses. Soft-fail (no card / SDHC fault) drops us into the bare
-    // REPL — same fallback as the manual-paste workflow.
-    {
-        static const char sd_boot_snippet[] =
-            "import vfs, zephyr\n"
-            "try:\n"
-            "    vfs.mount(zephyr.DiskAccess('SD'), '/')\n"
-            "except Exception:\n"
-            "    pass\n";
-        nlr_buf_t nlr;
-        if (nlr_push(&nlr) == 0) {
-            mp_lexer_t *lex = mp_lexer_new_from_str_len(
-                MP_QSTR__lt_string_gt_,
-                sd_boot_snippet, sizeof(sd_boot_snippet) - 1, 0);
-            qstr source_name = lex->source_name;
-            mp_parse_tree_t pt = mp_parse(lex, MP_PARSE_FILE_INPUT);
-            mp_obj_t fun = mp_compile(&pt, source_name, false);
-            mp_call_function_0(fun);
-            nlr_pop();
-        }
-    }
     #endif
 
     #if MICROPY_MODULE_FROZEN || MICROPY_VFS
