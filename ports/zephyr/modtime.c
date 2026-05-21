@@ -28,6 +28,7 @@
 #include <zephyr/kernel.h>
 
 #include "py/obj.h"
+#include "shared/timeutils/timeutils.h"
 
 static mp_obj_t mp_time_time_get(void) {
     /* The absence of FP support is deliberate. The Zephyr port uses
@@ -35,4 +36,10 @@ static mp_obj_t mp_time_time_get(void) {
      * lose precision on devices with a long uptime.
      */
     return mp_obj_new_int(k_uptime_get() / 1000);
+}
+
+// No wall clock on this port; the no-arg time.localtime()/gmtime() current-time
+// path uses the uptime, the same source as mp_time_time_get().
+static void mp_time_localtime_get(timeutils_struct_time_t *tm) {
+    timeutils_seconds_since_epoch_to_struct_time(k_uptime_get() / 1000, tm);
 }
