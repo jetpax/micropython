@@ -131,11 +131,20 @@ static bool first_ipv4_dns(struct net_in_addr *out) {
     return false;
 }
 
-/* === scan: net_mgmt event callback collects results into a list ============ */
+/* === scan: net_mgmt event callback stashes raw results ===================== */
+
+/* wlan_scan_handler runs on the net_mgmt thread, which has no MicroPython
+ * per-thread state -- any GC allocation there NULL-derefs mp_thread_get_state()
+ * inside gc_alloc. So the callback only copies raw wifi_scan_result structs
+ * into this array; network_wlan_scan() builds the MP objects afterwards on the
+ * MP thread. Same split as the getaddrinfo DNS-callback fix in modsocket.c.
+ * Overflow past the cap is silently dropped. */
+#define WLAN_SCAN_MAX_RESULTS 16
 
 typedef struct {
-    mp_obj_t list;
     bool done;
+    uint8_t n_results;
+    struct wifi_scan_result results[WLAN_SCAN_MAX_RESULTS];
 } wlan_scan_ctx_t;
 
 static struct k_sem wlan_scan_sem;
@@ -150,15 +159,12 @@ static void wlan_scan_handler(struct net_mgmt_event_callback *cb,
         return;
     }
     if (mgmt_event == NET_EVENT_WIFI_SCAN_RESULT) {
-        const struct wifi_scan_result *res = (const struct wifi_scan_result *)cb->info;
-        mp_obj_t entry[6];
-        entry[0] = mp_obj_new_bytes(res->ssid, res->ssid_length);
-        entry[1] = mp_obj_new_bytes(res->mac, res->mac_length);
-        entry[2] = MP_OBJ_NEW_SMALL_INT(res->channel);
-        entry[3] = MP_OBJ_NEW_SMALL_INT(res->rssi);
-        entry[4] = MP_OBJ_NEW_SMALL_INT(res->security);
-        entry[5] = mp_const_false;  /* hidden — Zephyr doesn't surface */
-        mp_obj_list_append(ctx->list, mp_obj_new_tuple(6, entry));
+        /* Runs on the net_mgmt thread -- stash the raw struct, NO GC calls
+         * here (see wlan_scan_ctx_t). Overflow past the cap is dropped. */
+        if (ctx->n_results < WLAN_SCAN_MAX_RESULTS) {
+            ctx->results[ctx->n_results] = *(const struct wifi_scan_result *)cb->info;
+            ctx->n_results++;
+        }
     } else if (mgmt_event == NET_EVENT_WIFI_SCAN_DONE) {
         ctx->done = true;
         k_sem_give(&wlan_scan_sem);
@@ -428,7 +434,7 @@ static mp_obj_t network_wlan_scan(size_t n_args, const mp_obj_t *pos_args, mp_ma
         mp_raise_OSError(MP_EBUSY);
     }
 
-    wlan_scan_ctx_t ctx = { .list = mp_obj_new_list(0, NULL), .done = false };
+    wlan_scan_ctx_t ctx = { .done = false, .n_results = 0 };
     k_sem_reset(&wlan_scan_sem);
     wlan_scan_active = &ctx;
     net_mgmt_init_event_callback(&wlan_scan_cb, wlan_scan_handler,
@@ -449,7 +455,22 @@ static mp_obj_t network_wlan_scan(size_t n_args, const mp_obj_t *pos_args, mp_ma
 
     net_mgmt_del_event_callback(&wlan_scan_cb);
     wlan_scan_active = NULL;
-    return ctx.list;
+
+    /* Build the MP list from the stashed raw results -- on the MP thread,
+     * with the GIL held, where the GC is safe to use. */
+    mp_obj_t list = mp_obj_new_list(0, NULL);
+    for (uint8_t i = 0; i < ctx.n_results; i++) {
+        const struct wifi_scan_result *res = &ctx.results[i];
+        mp_obj_t entry[6];
+        entry[0] = mp_obj_new_bytes(res->ssid, res->ssid_length);
+        entry[1] = mp_obj_new_bytes(res->mac, res->mac_length);
+        entry[2] = MP_OBJ_NEW_SMALL_INT(res->channel);
+        entry[3] = MP_OBJ_NEW_SMALL_INT(res->rssi);
+        entry[4] = MP_OBJ_NEW_SMALL_INT(res->security);
+        entry[5] = mp_const_false;  /* hidden — Zephyr doesn't surface */
+        mp_obj_list_append(list, mp_obj_new_tuple(6, entry));
+    }
+    return list;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(network_wlan_scan_obj, 1, network_wlan_scan);
 
