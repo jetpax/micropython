@@ -98,6 +98,11 @@
 	status = "okay";
 };
 
+/* SoC temperature sensor (firmware GET_TEMPERATURE tag) -> SENSOR_CHAN_DIE_TEMP. */
+&vc_thermal {
+	status = "okay";
+};
+
 &usb {
 	status = "okay";
 
