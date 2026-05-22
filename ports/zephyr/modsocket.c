@@ -343,6 +343,41 @@ static mp_obj_t socket_setsockopt(size_t n_args, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(socket_setsockopt_obj, 4, 4, socket_setsockopt);
 
+// socket.settimeout(value): None blocks indefinitely; a number sets the
+// timeout in seconds. {0,0} -> K_FOREVER in Zephyr's SO_*TIMEO handler.
+static mp_obj_t socket_settimeout(mp_obj_t self_in, mp_obj_t timeout_in) {
+    socket_obj_t *socket = self_in;
+    socket_check_closed(socket);
+
+    struct zsock_timeval tv = { 0, 0 };
+    if (timeout_in != mp_const_none) {
+        #if MICROPY_PY_BUILTINS_FLOAT
+        mp_float_t val = mp_obj_get_float(timeout_in);
+        if (val < 0) {
+            mp_raise_ValueError(MP_ERROR_TEXT("timeout must be non-negative"));
+        }
+        tv.tv_sec = (time_t)val;
+        tv.tv_usec = (long)((val - (mp_float_t)tv.tv_sec) * 1000000);
+        #else
+        mp_int_t val = mp_obj_get_int(timeout_in);
+        if (val < 0) {
+            mp_raise_ValueError(MP_ERROR_TEXT("timeout must be non-negative"));
+        }
+        tv.tv_sec = val;
+        #endif
+    }
+
+    int res = zsock_setsockopt(socket->ctx, ZSOCK_SOL_SOCKET, ZSOCK_SO_RCVTIMEO,
+                               &tv, sizeof(tv));
+    RAISE_SOCK_ERRNO(res);
+    res = zsock_setsockopt(socket->ctx, ZSOCK_SOL_SOCKET, ZSOCK_SO_SNDTIMEO,
+                           &tv, sizeof(tv));
+    RAISE_SOCK_ERRNO(res);
+
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(socket_settimeout_obj, socket_settimeout);
+
 static mp_obj_t socket_makefile(size_t n_args, const mp_obj_t *args) {
     (void)n_args;
     return args[0];
@@ -424,6 +459,7 @@ static const mp_rom_map_elem_t socket_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_recv), MP_ROM_PTR(&socket_recv_obj) },
     { MP_ROM_QSTR(MP_QSTR_recvfrom), MP_ROM_PTR(&socket_recvfrom_obj) },
     { MP_ROM_QSTR(MP_QSTR_setsockopt), MP_ROM_PTR(&socket_setsockopt_obj) },
+    { MP_ROM_QSTR(MP_QSTR_settimeout), MP_ROM_PTR(&socket_settimeout_obj) },
 
     { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&mp_stream_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_readinto), MP_ROM_PTR(&mp_stream_readinto_obj) },
