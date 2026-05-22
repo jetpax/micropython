@@ -7,6 +7,12 @@ include("$(MPY_DIR)/extmod/asyncio")
 # ntptime: NTP wall-clock sync used by main.py (_quick_ntp / ntp_sync_task).
 require("ntptime")
 
+# requests: HTTP client for _detect_timezone() in lib/sys/utils.py (IP-based
+# timezone auto-detect). Frozen via bundle-networking on the esp32 port; this
+# board's manifest is curated, so require it explicitly. _detect_timezone()
+# tries `import urequests` first then falls back to `import requests`.
+require("requests")
+
 # Board-specific _boot.py: mounts the microSD at the VFS root (/), unlike
 # the stock ports/zephyr/modules/_boot.py which mounts disks at /<name>.
 freeze("$(PORT_DIR)/boards/rpi_zero_2w", "_boot.py")
