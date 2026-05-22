@@ -28,6 +28,8 @@
 #include "py/mphal.h"
 #include "extmod/modmachine.h"
 
+int64_t mp_hal_wall_clock_offset_ms = 0;
+
 static struct k_poll_signal wait_signal;
 static struct k_poll_event wait_events[2] = {
     K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_SIGNAL,

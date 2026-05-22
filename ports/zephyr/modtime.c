@@ -28,6 +28,7 @@
 #include <zephyr/kernel.h>
 
 #include "py/obj.h"
+#include "py/mphal.h"
 #include "shared/timeutils/timeutils.h"
 
 static mp_obj_t mp_time_time_get(void) {
@@ -35,11 +36,11 @@ static mp_obj_t mp_time_time_get(void) {
      * single precision floats so the fraction component will start to
      * lose precision on devices with a long uptime.
      */
-    return mp_obj_new_int(k_uptime_get() / 1000);
+    return mp_obj_new_int(mp_hal_wall_time_ms() / 1000);
 }
 
-// No wall clock on this port; the no-arg time.localtime()/gmtime() current-time
-// path uses the uptime, the same source as mp_time_time_get().
+// Wall-clock time: uptime plus the offset set by machine.RTC().datetime(...).
+// Before an RTC/NTP set, the offset is 0 so this still reads as uptime.
 static void mp_time_localtime_get(timeutils_struct_time_t *tm) {
-    timeutils_seconds_since_epoch_to_struct_time(k_uptime_get() / 1000, tm);
+    timeutils_seconds_since_epoch_to_struct_time(mp_hal_wall_time_ms() / 1000, tm);
 }

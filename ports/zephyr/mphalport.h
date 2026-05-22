@@ -35,6 +35,16 @@ static inline uint64_t mp_hal_time_ns(void) {
     return k_ticks_to_ns_near64(k_uptime_ticks());
 }
 
+// Wall-clock support. This SoC has no battery-backed RTC, so the wall clock
+// is a software offset added to the monotonic uptime. mp_hal_wall_clock_offset_ms
+// is 0 until machine.RTC().datetime(...) sets it (NTP sync), so before sync the
+// wall clock simply equals uptime. It resets on every cold boot.
+extern int64_t mp_hal_wall_clock_offset_ms;
+
+static inline int64_t mp_hal_wall_time_ms(void) {
+    return k_uptime_get() + mp_hal_wall_clock_offset_ms;
+}
+
 #define mp_hal_delay_us_fast(us)   (mp_hal_delay_us(us))
 
 // C-level pin HAL
