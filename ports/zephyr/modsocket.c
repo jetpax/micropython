@@ -573,7 +573,13 @@ static mp_obj_t mod_getaddrinfo(size_t n_args, const mp_obj_t *args) {
 
     return state.result;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_getaddrinfo_obj, 2, 3, mod_getaddrinfo);
+// getaddrinfo(host, port, af=0, type=0, proto=0, flags=0): the MicroPython
+// socket API signature -- 2-6 args, matching docs/library/socket.rst and the
+// lwip and esp32 ports. Only af is used here; type/proto/flags are accepted
+// and ignored (the result tuples hardcode SOCK_STREAM/IPPROTO_TCP). The
+// `requests` module passes type as the 4th arg; the previous cap of 3 was a
+// deviation from the MicroPython API.
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_getaddrinfo_obj, 2, 6, mod_getaddrinfo);
 
 
 static mp_obj_t pkt_get_info(void) {
