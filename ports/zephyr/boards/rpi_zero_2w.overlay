@@ -86,11 +86,11 @@
  * The kernel `zephyr,console` chosen is left alone so PL011 keeps
  * boot logs + panics.
  *
- * &mailbox + &firmware come up too so the DWC2 vendor pre_enable hook
+ * &mbox0 + &firmware come up too so the DWC2 vendor pre_enable hook
  * can SET_POWER_STATE(USB_HCD, on) at boot, and the new
  * hwinfo_bcm2835 driver can read GET_BOARD_SERIAL for iSerialNumber.
  */
-&mailbox {
+&mbox0 {
 	status = "okay";
 };
 
