@@ -34,3 +34,19 @@
 		zephyr,uart-mp-repl = &cdc_acm_uart0;
 	};
 };
+
+/*
+ * Legacy SDHost controller -> external microSD slot. ALT0 mux on
+ * GPIO 48..53 via the sdhost_gpio48 group; the SoC DTS leaves this
+ * node disabled, unlike the Zero 2 W.
+ */
+&sdhost {
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdhost_gpio48>;
+	status = "okay";
+
+	sdmmc {
+		compatible = "zephyr,sdmmc-disk";
+		disk-name = "SD";
+	};
+};
