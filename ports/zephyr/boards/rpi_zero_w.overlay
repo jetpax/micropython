@@ -1,0 +1,36 @@
+/*
+ * Original Pi Zero W devicetree overlay for MicroPython on Zephyr.
+ *
+ * First light: the REPL on USB CDC ACM and nothing else. No HAT, no
+ * display, no Wi-Fi -- unlike the Zero 2 W overlay, which is mostly
+ * Pirate Audio wiring.
+ *
+ * &mbox0 + &firmware come up so the DWC2 vendor pre_enable hook can
+ * SET_POWER_STATE(USB_HCD, on) at boot and hwinfo can read the board
+ * serial for iSerialNumber. The kernel `zephyr,console` stays on the
+ * mini-UART (set by the board DTS) so boot logs and panics keep a
+ * dedicated channel; only the REPL moves to CDC.
+ */
+
+&mbox0 {
+	status = "okay";
+};
+
+&firmware {
+	status = "okay";
+};
+
+&usb {
+	status = "okay";
+
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "MP REPL";
+	};
+};
+
+/ {
+	chosen {
+		zephyr,uart-mp-repl = &cdc_acm_uart0;
+	};
+};
