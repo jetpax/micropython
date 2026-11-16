@@ -91,7 +91,8 @@
 #define MICROPY_PY_MACHINE_UART     (1)
 #define MICROPY_PY_MACHINE_UART_INCLUDEFILE "ports/zephyr/machine_uart.c"
 #ifdef CONFIG_WATCHDOG
-#define MICROPY_PY_MACHINE_WDT      (1)
+#include <zephyr/devicetree.h>
+#define MICROPY_PY_MACHINE_WDT      (DT_NODE_EXISTS(DT_ALIAS(watchdog0)))
 #define MICROPY_PY_MACHINE_WDT_INCLUDEFILE  "ports/zephyr/machine_wdt.c"
 #endif
 #define MICROPY_PY_MACHINE_PWM      (1)
@@ -112,6 +113,7 @@
 #define MICROPY_PY_BINASCII         (1)
 #define MICROPY_PY_HASHLIB          (1)
 #define MICROPY_PY_OS               (1)
+#define MICROPY_PY_OS_DUPTERM       (1)
 #define MICROPY_PY_TIME_TIME_TIME_NS (1)
 #define MICROPY_PY_TIME_INCLUDEFILE "ports/zephyr/modtime.c"
 #define MICROPY_PY_ZEPHYR           (1)

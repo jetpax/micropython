@@ -27,6 +27,7 @@
 #include "py/mpconfig.h"
 #include "py/runtime.h"
 #include "py/stream.h"
+#include "extmod/misc.h"
 #include "src/zephyr_getchar.h"
 // Zephyr headers
 #include <zephyr/kernel.h>
@@ -90,6 +91,8 @@ int mp_hal_stdin_rx_chr(void) {
 // Send string of given length
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
     mp_uint_t ret = len;
+    const char *str0 = str;
+    mp_uint_t len0 = len;
     #ifdef CONFIG_CONSOLE_SUBSYS
     while (len--) {
         char c = *str++;
@@ -105,6 +108,7 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
         uart_poll_out(uart_console_dev, *str++);
     }
     #endif
+    mp_os_dupterm_tx_strn(str0, len0);
     return ret;
 }
 
