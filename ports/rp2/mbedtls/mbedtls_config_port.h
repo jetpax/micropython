@@ -41,4 +41,9 @@ time_t rp2_rtctime_seconds(time_t *timer);
 // Include common mbedtls configuration.
 #include "extmod/mbedtls/mbedtls_config_common.h"
 
+// pico-sdk altcp_tls_mbedtls drops writes whose plaintext exceeds one
+// record; bump from the MP default (4096) to the TLS spec max.
+#undef MBEDTLS_SSL_OUT_CONTENT_LEN
+#define MBEDTLS_SSL_OUT_CONTENT_LEN (16384)
+
 #endif /* MICROPY_INCLUDED_MBEDTLS_CONFIG_H */

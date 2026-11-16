@@ -213,6 +213,7 @@ set(PICO_SDK_COMPONENTS
     hardware_irq
     hardware_pio
     hardware_pll
+    hardware_psram
     hardware_pwm
     hardware_regs
     hardware_resets
@@ -602,8 +603,19 @@ if(PICO_RP2040)
         PICO_RP2040_USB_DEVICE_ENUMERATION_FIX=1
     )
 elseif(PICO_RP2350)
-    target_compile_definitions(${MICROPY_TARGET} PRIVATE
-        PICO_EMBED_XIP_SETUP=1 # to put flash into continuous read mode
+    if(NOT MICROPY_HW_NO_EMBED_XIP_SETUP)
+        target_compile_definitions(${MICROPY_TARGET} PRIVATE
+            PICO_EMBED_XIP_SETUP=1 # to put flash into continuous read mode
+        )
+    endif()
+    # Stub symbols expected by pico-sdk hardware_psram runtime init; we don't
+    # use the auto-place-variables-in-PSRAM feature, just runtime allocation.
+    target_link_options(${MICROPY_TARGET} PRIVATE
+        "LINKER:--defsym=__psram_start__=0x11000000"
+        "LINKER:--defsym=__psram_end__=0x11000000"
+        "LINKER:--defsym=__psram_load_start__=0x11000000"
+        "LINKER:--defsym=__psram_load_end__=0x11000000"
+        "LINKER:--defsym=__psram_load_source__=0x11000000"
     )
 endif()
 

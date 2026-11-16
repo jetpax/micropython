@@ -2,6 +2,11 @@
 #define MICROPY_HW_BOARD_NAME          "SparkFun Thing Plus RP2350"
 #define MICROPY_HW_FLASH_STORAGE_BYTES (14 * 1024 * 1024)
 
+// Enable UART REPL on UART0 (TX=GPIO0, RX=GPIO1) so the debug probe's UART
+// bridge gives a working REPL even if USB CDC enumeration is flaky on this
+// chip — matches the picosdk-validated configuration that proved 8 MiB PSRAM.
+#define MICROPY_HW_ENABLE_UART_REPL (1)
+
 // Enable networking.
 #define MICROPY_PY_NETWORK 1
 #define MICROPY_PY_NETWORK_HOSTNAME_DEFAULT "ThingPlusRP2350"
@@ -45,4 +50,8 @@ int mp_hal_is_pin_reserved(int n);
 #define MICROPY_HW_UART1_RTS (7)
 
 #define MICROPY_HW_PSRAM_CS_PIN (8)
-#define MICROPY_HW_ENABLE_PSRAM (1)
+// Disabled until hardware is replaced and pico-sdk PR #2919 (pico-psram
+// branch) merges to develop. The driver wiring in rp2_psram.c uses the
+// new hardware_psram library; pico-sdk submodule is currently on the
+// pico-psram branch. Flip this back to 1 on the new DUT to re-enable.
+#define MICROPY_HW_ENABLE_PSRAM (0)

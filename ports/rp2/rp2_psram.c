@@ -31,10 +31,13 @@
 #if MICROPY_HW_ENABLE_PSRAM
 
 #include "hardware/structs/ioqspi.h"
+#include "hardware/structs/pads_bank0.h"
 #include "hardware/structs/qmi.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/clocks.h"
 #include "hardware/sync.h"
+#include "hardware/flash.h"
+#include "hardware/psram.h"
 #include "rp2_psram.h"
 
 size_t __no_inline_not_in_flash_func(psram_detect)(void) {
@@ -108,6 +111,29 @@ size_t __no_inline_not_in_flash_func(psram_detect)(void) {
 }
 
 size_t __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
+    // Use the new hardware_psram library from pico-sdk PR #2919 (pico-psram
+    // branch). This properly handles the RP2350-E14 errata, registers a
+    // bootrom-aware QMI CS1 setup callback, and uses the bootrom's
+    // flash_do_cmd_cs() for chip detection — all things the old raw-QMI
+    // approach in this file was missing on A2 silicon.
+    flash_devinfo_set_cs_gpio(1, cs_pin);
+    // Tell the bootrom there's *some* device on CS1; size is fixed up below
+    // after detect, but bootrom needs a non-NONE value before flash_start_xip.
+    flash_devinfo_set_cs_size(1, FLASH_DEVINFO_SIZE_8M);
+
+    // APS6404 timing: 109 MHz max clock, 8000ns max select, 50ns min deselect.
+    if (psram_configure_params(109000000, 8000, 50) != PICO_OK) {
+        return 0;
+    }
+    if (psram_reinitialise() != PICO_OK) {
+        return 0;
+    }
+    return psram_get_size();
+}
+
+// Old code retained below behind 0 for reference.
+#if 0
+size_t __no_inline_not_in_flash_func(psram_init_old)(uint cs_pin) {
     gpio_set_function(cs_pin, GPIO_FUNC_XIP_CS1);
 
     uint32_t intr_stash = save_and_disable_interrupts();
@@ -194,5 +220,6 @@ size_t __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
 
     return psram_size;
 }
+#endif // old code retained for reference
 
 #endif
