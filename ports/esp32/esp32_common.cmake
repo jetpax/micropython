@@ -315,6 +315,13 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
 idf_build_get_property(idf_compile_options COMPILE_OPTIONS)
 target_compile_options(usermod INTERFACE ${idf_compile_options})
 
+# Likewise the IDF's global compile definitions, most importantly ESP_PLATFORM:
+# usermod sources are also compiled into the project executable, and from IDF
+# v6 that target no longer receives them, so FreeRTOS.h skips idf_additions.h
+# (xTaskCreatePinnedToCore etc.) and ESP_PLATFORM-gated code takes the wrong path.
+idf_build_get_property(idf_compile_definitions COMPILE_DEFINITIONS)
+target_compile_definitions(usermod INTERFACE ${idf_compile_definitions} ESP_PLATFORM=1)
+
 # Additional include directories needed for private NimBLE headers.
 target_include_directories(${MICROPY_TARGET} PUBLIC
     ${IDF_PATH}/components/bt/host/nimble/nimble
