@@ -48,15 +48,16 @@ static void usb_serial_jtag_handle_rx(void) {
     } else {
         portENTER_CRITICAL(&rx_mux);
     }
-    size_t req_len = ringbuf_free(&stdin_ringbuf);
-    if (req_len > USB_SERIAL_JTAG_PACKET_SZ_BYTES) {
-        req_len = USB_SERIAL_JTAG_PACKET_SZ_BYTES;
-    }
-    size_t len = usb_serial_jtag_ll_read_rxfifo(rx_buf, req_len);
+    // Always empty the hardware FIFO, even when stdin_ringbuf is full. Reading only what
+    // fits would leave a full FIFO behind when Python isn't reading stdin (e.g. a main.py
+    // that never does): the host can then send no further packet, so no RECV_PKT interrupt
+    // ever comes again and even Ctrl-C can't get through. Bytes that don't fit are dropped,
+    // but the interrupt character is still seen.
+    size_t len = usb_serial_jtag_ll_read_rxfifo(rx_buf, USB_SERIAL_JTAG_PACKET_SZ_BYTES);
     for (size_t i = 0; i < len; ++i) {
         if (rx_buf[i] == mp_interrupt_char) {
             mp_sched_keyboard_interrupt();
-        } else {
+        } else if (ringbuf_free(&stdin_ringbuf)) {
             ringbuf_put(&stdin_ringbuf, rx_buf[i]);
         }
     }
@@ -90,6 +91,12 @@ static void usb_serial_jtag_isr_handler(void *arg) {
 }
 
 void usb_serial_jtag_init(void) {
+    // The USB Serial/JTAG peripheral survives a chip reset (it is what resets the chip), so
+    // its RX FIFO can still hold bytes the host sent before this boot. Discard them: with the
+    // RECV_PKT interrupt cleared below, a full FIFO would otherwise never raise it again.
+    for (int i = 0; i < 4 && usb_serial_jtag_ll_rxfifo_data_available(); ++i) {
+        usb_serial_jtag_ll_read_rxfifo(rx_buf, USB_SERIAL_JTAG_PACKET_SZ_BYTES);
+    }
     // Note: Don't clear the SERIAL_IN_EMPTY interrupt, as it's possible the
     // bootloader wrote enough data to the host that we need the interrupt to flush it.
     usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT |
@@ -101,7 +108,7 @@ void usb_serial_jtag_init(void) {
 }
 
 void usb_serial_jtag_poll_rx(void) {
-    if (usb_serial_jtag_ll_rxfifo_data_available() && ringbuf_free(&stdin_ringbuf)) {
+    if (usb_serial_jtag_ll_rxfifo_data_available()) {
         usb_serial_jtag_handle_rx();
     }
 }
